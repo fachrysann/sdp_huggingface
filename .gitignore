@@ -1,0 +1,121 @@
+# ==========================================
+# 1. ENVIRONMENT VARIABLES & SECRETS (CRITICAL)
+# ==========================================
+# NEVER commit environment files that contain sensitive data!
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+.env.test
+
+# ==========================================
+# 2. VIRTUAL ENVIRONMENT & DEPENDENCIES
+# ==========================================
+# Virtual environments are large and should not be committed
+.venv/
+venv/
+env/
+ENV/
+ENV.bak/
+.Python
+
+# ==========================================
+# 3. CACHE & COMPILED PYTHON FILES
+# ==========================================
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# ==========================================
+# 4. MACHINE LEARNING MODELS & DATA (LARGE FILES)
+# ==========================================
+# Large model files that are auto-downloaded at runtime
+model/
+models/
+*.task
+*.tflite
+*.pb
+*.pbtxt
+*.h5
+*.weights
+*.hdf5
+data/
+datasets/
+
+# ==========================================
+# 5. TESTING & LOGS
+# ==========================================
+# Test artifacts and application logs
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.log
+logs/
+test-results/
+
+# ==========================================
+# 6. DATABASE & UPLOADS
+# ==========================================
+# Local databases and user uploads
+*.db
+*.sqlite
+*.sqlite3
+uploads/
+media/
+tmp/
+temp/
+
+# ==========================================
+# 7. IDE & EDITOR SETTINGS
+# ==========================================
+# Project-specific IDE settings (keep .editorconfig if shared)
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ==========================================
+# 8. OPERATING SYSTEM FILES
+# ==========================================
+# OS-specific files that should not be tracked
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ==========================================
+# 9. PIP & PACKAGE MANAGEMENT
+# ==========================================
+# Pip's temporary files
+pip-log.txt
+pip-delete-this-directory.txt
+.pipdeptree.txt
+
+# ==========================================
+# 10. CREDENTIALS & SENSITIVE DATA
+# ==========================================
+# Any files that might contain secrets
+.aws/
+.ssh/
+credentials.json
+secrets.json
+*.pem
+*.key
+*.pub
+keyfile

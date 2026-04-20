@@ -1,0 +1,22 @@
+name: Deploy to Hugging Face Space
+
+# Script ini akan berjalan otomatis setiap ada "git push" ke branch "main"
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true # Penting jika model Anda menggunakan Git LFS
+
+      - name: Push to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        # UBAH BARIS DI BAWAH INI SESUAI USERNAME & NAMA SPACE ANDA
+        run: git push --force https://USERNAME_HF_ANDA:${HF_TOKEN}@huggingface.co/spaces/USERNAME_HF_ANDA/NAMA_SPACE_ANDA main
