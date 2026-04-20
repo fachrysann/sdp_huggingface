@@ -19,4 +19,4 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         # UBAH BARIS DI BAWAH INI SESUAI USERNAME & NAMA SPACE ANDA
-        run: git push --force https://USERNAME_HF_ANDA:${HF_TOKEN}@huggingface.co/spaces/USERNAME_HF_ANDA/NAMA_SPACE_ANDA main
+        run: git push --force https://fachrysann:${HF_TOKEN}@huggingface.co/spaces/fachrysann/stroke-detect-pro main
