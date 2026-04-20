@@ -1,3 +1,13 @@
+---
+title: Stroke Detect Pro API
+emoji: 🏥
+colorFrom: blue
+colorTo: red
+sdk: docker
+app_port: 8000
+pinned: false
+---
+
 # Facial Palsy and Eye Detection API 🧠
 
 <div align="center">
