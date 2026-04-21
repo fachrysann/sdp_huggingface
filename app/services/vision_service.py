@@ -225,26 +225,26 @@ class FaceAnalyzerService:
         #   < 0.07  → normal (variasi natural & mikro-gerak)
         #   0.07–0.18 → mild asymmetry
         #   > 0.18   → significant asymmetry
-        THRESH_NORMAL = 0.07
-        THRESH_MILD   = 0.18
+        THRESH_NORMAL = 0.04   # sebelumnya 0.07 → zona "aman" diperkecil
+        THRESH_MILD   = 0.10   # sebelumnya 0.18 → asimetri ringan lebih cepat terdeteksi
 
         if gaze_diff <= THRESH_NORMAL:
-            score    = int(100 - (gaze_diff / THRESH_NORMAL) * 15)   # 85–100
-            status   = "Simetris"
-            is_sym   = True
-            color    = (0, 220, 80)
+            score  = int(100 - (gaze_diff / THRESH_NORMAL) * 20)  # 80–100
+            status = "Simetris"
+            is_sym = True
+            color  = (0, 220, 80)
         elif gaze_diff <= THRESH_MILD:
-            t        = (gaze_diff - THRESH_NORMAL) / (THRESH_MILD - THRESH_NORMAL)
-            score    = int(85 - t * 45)                               # 40–85
-            status   = "Asimetri Ringan"
-            is_sym   = False
-            color    = (0, 165, 255)
+            t      = (gaze_diff - THRESH_NORMAL) / (THRESH_MILD - THRESH_NORMAL)
+            score  = int(80 - t * 50)                              # 30–80
+            status = "Asimetri Ringan"
+            is_sym = False
+            color  = (0, 165, 255)
         else:
-            t        = min(1.0, (gaze_diff - THRESH_MILD) / 0.12)
-            score    = int(40 - t * 40)                               # 0–40
-            status   = "Asimetri Signifikan"
-            is_sym   = False
-            color    = (0, 0, 255)
+            t      = min(1.0, (gaze_diff - THRESH_MILD) / 0.08)
+            score  = int(30 - t * 30)                              # 0–30
+            status = "Asimetri Signifikan"
+            is_sym = False
+            color  = (0, 0, 255)
 
         # ---- Deteksi arah lirikan ----
         CENTER = 0.5
