@@ -151,131 +151,162 @@ class FaceAnalyzerService:
         }
     
     # ==========================================
-    # ENDPOINT 2: EYE SYMMETRY
+    # ENDPOINT 2: EYE SYMMETRY (IMPROVED)
     # ==========================================
+    def get_gaze_ratio(self, iris_pt, corner_medial, corner_lateral, w, h):
+        """
+        Hitung posisi iris relatif dari sudut MEDIAL ke LATERAL.
+        Return: 0.0 = iris di sudut medial (melirik kearah luar/temporal),
+                1.0 = iris di sudut lateral (melirik ke dalam/nasal)
+        
+        Untuk mata kiri (patient view): medial=33, lateral=133
+        Untuk mata kanan (patient view): medial=263, lateral=362
+        Dengan cara ini, keduanya menggunakan konvensi yang sama:
+        melirik kanan → gaze_L tinggi, gaze_R tinggi (sinkron)
+        """
+        ix  = iris_pt.x * w
+        iy  = iris_pt.y * h
+        cmx = corner_medial.x * w
+        cmy = corner_medial.y * h
+        clx = corner_lateral.x * w
+        cly = corner_lateral.y * h
+
+        dist_total = math.sqrt((clx - cmx)**2 + (cly - cmy)**2)
+        if dist_total < 1e-6:
+            return 0.5
+
+        # Proyeksi iris ke axis medial→lateral (robust terhadap kepala sedikit miring)
+        axis_x = (clx - cmx) / dist_total
+        axis_y = (cly - cmy) / dist_total
+        proj   = (ix - cmx) * axis_x + (iy - cmy) * axis_y
+
+        return max(0.0, min(1.0, proj / dist_total))
+
+    def analyze_eye_symmetry(self, image: np.ndarray):
+        """Method Public untuk Endpoint /analyze/eye-symmetry"""
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
+        detection_result = self.landmarker.detect(mp_image)
+
+        if not detection_result.face_landmarks:
+            return None, None
+
+        landmarks = detection_result.face_landmarks[0]
+        results   = self._calculate_eye_symmetry(landmarks, image)
+        return results, image
+
     def _calculate_eye_symmetry(self, landmarks, image):
-        """Logika kalkulasi dan visualisasi Lirikan mata menggunakan MediaPipe Iris"""
+        """
+        Logika baru:
+        - gaze_L: ratio iris kiri dari sudut medial (33) ke lateral (133)
+        - gaze_R: ratio iris kanan dari sudut medial (263) ke lateral (362)
+        - Keduanya menggunakan arah MEDIAL→LATERAL yang sama sebagai referensi,
+        sehingga melirik ke arah yang sama = kedua nilai naik/turun bersamaan.
+        - Sinkronisasi: |gaze_L - gaze_R| mendekati 0 = simetris
+        """
         h, w, _ = image.shape
 
-        # Titik Sudut Mata (Corners)
-        l_c_l, l_c_r = landmarks[33], landmarks[133]
-        r_c_l, r_c_r = landmarks[362], landmarks[263]
+        # ---- Landmark ----
+        l_iris     = landmarks[468]   # iris kiri
+        l_medial   = landmarks[33]    # sudut medial mata kiri   (dekat hidung)
+        l_lateral  = landmarks[133]   # sudut lateral mata kiri  (dekat telinga)
 
-        # Titik Kontur Tepi MediaPipe Iris
-        l_iris_contour = [469, 470, 471, 472]
-        r_iris_contour = [474, 475, 476, 477]
+        r_iris     = landmarks[473]   # iris kanan
+        r_medial   = landmarks[263]   # sudut medial mata kanan  (dekat hidung)
+        r_lateral  = landmarks[362]   # sudut lateral mata kanan (dekat telinga)
 
-        # Dapatkan center dan radius yang presisi dari kontur
-        l_iris_center, l_iris_radius = self.get_iris_center_and_radius(landmarks, l_iris_contour, w, h)
-        r_iris_center, r_iris_radius = self.get_iris_center_and_radius(landmarks, r_iris_contour, w, h)
+        # ---- Gaze ratio (skala 0–1, konvensi SAMA untuk kedua mata) ----
+        gaze_L = self.get_gaze_ratio(l_iris, l_medial, l_lateral, w, h)
+        gaze_R = self.get_gaze_ratio(r_iris, r_medial, r_lateral, w, h)
 
-        # Hitung Rasio Lirikan
-        l_ratio = self.get_iris_ratio(l_iris_center, l_c_l, l_c_r, w, h)
-        r_ratio = self.get_iris_ratio(r_iris_center, r_c_l, r_c_r, w, h)
+        # ---- Sinkronisasi ----
+        gaze_diff = abs(gaze_L - gaze_R)
 
-        # -------------------------------------------------------------------------
-        # UPGRADE: HEAD POSE COMPENSATION via facial midline
-        # Nose tip (1) dan midpoint antara kedua eye corners -> estimasi yaw bias
-        # Jika kepala miring ke kanan, l_ratio naik dan r_ratio turun secara bersamaan.
-        # Kita koreksi dengan menghitung bias rata-rata lalu shift kedua rasio.
-        # -------------------------------------------------------------------------
-        nose_tip = landmarks[1]
-        nose_x = nose_tip.x * w
+        # Threshold kalibrasi:
+        #   < 0.07  → normal (variasi natural & mikro-gerak)
+        #   0.07–0.18 → mild asymmetry
+        #   > 0.18   → significant asymmetry
+        THRESH_NORMAL = 0.07
+        THRESH_MILD   = 0.18
 
-        # Midpoint horizontal antara inner corners kedua mata (landmark 133 & 362)
-        inner_l_x = landmarks[133].x * w
-        inner_r_x = landmarks[362].x * w
-        eye_midpoint_x = (inner_l_x + inner_r_x) / 2.0
-
-        # Lebar wajah estimasi (jarak outer corners)
-        face_width = abs(landmarks[263].x * w - landmarks[33].x * w)
-        if face_width > 0:
-            # Seberapa jauh hidung bergeser dari garis tengah mata (normalized -0.5..0.5)
-            yaw_bias = (nose_x - eye_midpoint_x) / face_width
+        if gaze_diff <= THRESH_NORMAL:
+            score    = int(100 - (gaze_diff / THRESH_NORMAL) * 15)   # 85–100
+            status   = "Simetris"
+            is_sym   = True
+            color    = (0, 220, 80)
+        elif gaze_diff <= THRESH_MILD:
+            t        = (gaze_diff - THRESH_NORMAL) / (THRESH_MILD - THRESH_NORMAL)
+            score    = int(85 - t * 45)                               # 40–85
+            status   = "Asimetri Ringan"
+            is_sym   = False
+            color    = (0, 165, 255)
         else:
-            yaw_bias = 0.0
+            t        = min(1.0, (gaze_diff - THRESH_MILD) / 0.12)
+            score    = int(40 - t * 40)                               # 0–40
+            status   = "Asimetri Signifikan"
+            is_sym   = False
+            color    = (0, 0, 255)
 
-        # Kompensasi: geser kedua rasio berlawanan arah bias yaw
-        # Koefisien 0.5 didapat dari observasi bahwa 1 unit bias ~ 0.5 unit ratio shift
-        COMPENSATION_COEFF = 0.5
-        l_ratio_compensated = np.clip(l_ratio - yaw_bias * COMPENSATION_COEFF, 0.0, 1.0)
-        r_ratio_compensated = np.clip(r_ratio + yaw_bias * COMPENSATION_COEFF, 0.0, 1.0)
+        # ---- Deteksi arah lirikan ----
+        CENTER = 0.5
+        DEAD_ZONE = 0.12  # zona tengah = dianggap lurus
 
-        # -------------------------------------------------------------------------
-        # UPGRADE: GAZE CONVERGENCE CHECK
-        # Untuk pandangan lurus/simetris, kedua rasio harus mendekati 0.5.
-        # Untuk pandangan menyerong tapi simetris (keduanya lirik kiri misal),
-        # selisih tetap kecil tapi keduanya sama-sama jauh dari 0.5.
-        # Kita pakai dua komponen:
-        #   1. ratio_diff         -> apakah kedua mata bergerak BERSAMA (konsistensi)
-        #   2. convergence_error  -> apakah arah lirikan MASUK AKAL secara binokuler
-        #      (mata kiri & kanan seharusnya mirror satu sama lain di sumbu wajah)
-        # -------------------------------------------------------------------------
-        ratio_diff = abs(l_ratio_compensated - r_ratio_compensated)
+        avg_gaze = (gaze_L + gaze_R) / 2
+        if avg_gaze > CENTER + DEAD_ZONE:
+            gaze_dir = "Melirik Kanan"
+        elif avg_gaze < CENTER - DEAD_ZONE:
+            gaze_dir = "Melirik Kiri"
+        else:
+            gaze_dir = "Lurus / Tengah"
 
-        # Mirror check: untuk simetri sejati, (l_ratio) + (1 - r_ratio) harus ~ 1.0
-        # Contoh: keduanya lirik kiri -> l=0.3, r=0.3
-        #   mirror_sum = 0.3 + (1-0.3) = 1.0  ✓ simetris
-        # Keduanya lirik berlainan -> l=0.3, r=0.7
-        #   mirror_sum = 0.3 + (1-0.7) = 0.6  ✗ asimetris
-        mirror_sum = l_ratio_compensated + (1.0 - r_ratio_compensated)
-        convergence_error = abs(mirror_sum - 1.0)  # 0.0 = perfect, makin besar makin asimetris
+        # ==================== VISUALISASI ====================
+        def lm_px(idx):
+            return int(landmarks[idx].x * w), int(landmarks[idx].y * h)
 
-        # -------------------------------------------------------------------------
-        # UPGRADE: WEIGHTED COMPOSITE SCORE
-        # ratio_diff      -> bobot 60% (perbedaan langsung antar mata)
-        # convergence_err -> bobot 40% (validasi arah binokuler)
-        # Kedua komponen dinormalisasi ke skala yang sama (max_error = 0.5)
-        # -------------------------------------------------------------------------
-        MAX_ERROR = 0.5  # nilai maksimal teoritis untuk normalisasi
-        normalized_diff = min(ratio_diff / MAX_ERROR, 1.0)
-        normalized_conv = min(convergence_error / MAX_ERROR, 1.0)
+        # Titik-titik iris & sudut
+        for idx in [468, 473]:
+            cx, cy = lm_px(idx)
+            cv2.circle(image, (cx, cy), 5, (0, 255, 255), -1)
+            cv2.circle(image, (cx, cy), 5, (0, 0, 0), 1)
 
-        composite_error = (0.6 * normalized_diff) + (0.4 * normalized_conv)
-        score = int(round(max(0.0, min(100.0, (1.0 - composite_error) * 100))))
+        for idx in [33, 133, 263, 362]:
+            cx, cy = lm_px(idx)
+            cv2.circle(image, (cx, cy), 4, (255, 200, 0), -1)
 
-        # -------------------------------------------------------------------------
-        # UPGRADE: ADAPTIVE THRESHOLD untuk is_symmetrical
-        # Threshold tidak lagi fixed 0.10 — melainkan proporsional terhadap
-        # seberapa ekstrem lirikannya. Lirikan ekstrem (jauh dari center)
-        # secara alami lebih sulit presisi, jadi toleransinya sedikit lebih longgar.
-        # -------------------------------------------------------------------------
-        avg_deviation = (abs(l_ratio_compensated - 0.5) + abs(r_ratio_compensated - 0.5)) / 2.0
-        adaptive_threshold = 0.06 + (avg_deviation * 0.10)  # 0.06 (center) ~ 0.11 (extreme)
-        is_symmetrical = (ratio_diff <= adaptive_threshold) and (convergence_error <= adaptive_threshold * 1.5)
+        # Garis axis gaze (medial → lateral) tiap mata
+        cv2.arrowedLine(image, lm_px(33),  lm_px(133), (180, 180, 0), 1, tipLength=0.15)
+        cv2.arrowedLine(image, lm_px(263), lm_px(362), (180, 180, 0), 1, tipLength=0.15)
 
-        status_text = "Arah Lirikan Sama (Simetris)" if is_symmetrical else "Arah Lirikan Berbeda (Asimetris)"
-        color = (0, 255, 0) if is_symmetrical else (0, 0, 255)
-
-        # --- VISUALISASI MATA --- (tidak berubah)
-        cv2.circle(image, (int(l_iris_center[0]), int(l_iris_center[1])), int(l_iris_radius), (0, 255, 255), 1)
-        cv2.circle(image, (int(r_iris_center[0]), int(r_iris_center[1])), int(r_iris_radius), (0, 255, 255), 1)
-        cv2.circle(image, (int(l_iris_center[0]), int(l_iris_center[1])), 2, (0, 0, 255), -1)
-        cv2.circle(image, (int(r_iris_center[0]), int(r_iris_center[1])), 2, (0, 0, 255), -1)
-
+        # Dashboard
+        dash_w = min(w, 460)
         overlay = image.copy()
-        cv2.rectangle(overlay, (0, 0), (max(400, int(w * 0.6)), 175), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (0, 0), (dash_w, 170), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
 
-        cv2.putText(image, status_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        cv2.putText(image, f"Symmetry Score: {score}%", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(image, f"Diff: {ratio_diff:.3f}  Conv Err: {convergence_error:.3f}", (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
-        cv2.putText(image, f"Yaw Bias: {yaw_bias:+.3f}  Threshold: {adaptive_threshold:.3f}", (20, 132), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+        cv2.putText(image, f"Score: {score}%  |  {status}",
+                    (15, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+        cv2.putText(image, f"Arah: {gaze_dir}",
+                    (15, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+        cv2.putText(image, f"Gaze L (med→lat): {gaze_L:.3f}",
+                    (15, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(image, f"Gaze R (med→lat): {gaze_R:.3f}",
+                    (15, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(image, f"Diff: {gaze_diff:.3f}  (threshold normal: <{THRESH_NORMAL})",
+                    (15, 132), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 160, 160), 1)
 
-        bar_x, bar_y, bar_w = 20, 150, 200
-        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + 10), (100, 100, 100), -1)
-        l_pos = int(bar_x + (l_ratio_compensated * bar_w))
-        r_pos = int(bar_x + (r_ratio_compensated * bar_w))
-        cv2.circle(image, (l_pos, bar_y + 5), 6, (255, 0, 0), -1)
-        cv2.circle(image, (r_pos, bar_y + 5), 6, (0, 0, 255), -1)
+        # Progress bar sinkronisasi
+        bar_x, bar_y, bar_w_px = 15, 150, 200
+        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w_px, bar_y + 12), (80, 80, 80), -1)
+        fill = int(score / 100 * bar_w_px)
+        cv2.rectangle(image, (bar_x, bar_y), (bar_x + fill, bar_y + 12), color, -1)
+        cv2.putText(image, "sync", (bar_x + bar_w_px + 8, bar_y + 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 160), 1)
 
         return {
-            "symmetry_score": score,
-            "is_symmetrical": bool(is_symmetrical),
-            "left_eye_ratio": round(l_ratio_compensated, 3),
-            "right_eye_ratio": round(r_ratio_compensated, 3),
-            "ratio_difference": round(ratio_diff, 3),
-            "convergence_error": round(convergence_error, 3),
-            "yaw_bias": round(yaw_bias, 3),
-            "status": status_text
+            "symmetry_score":  score,
+            "is_symmetrical":  bool(is_sym),
+            "gaze_direction":  gaze_dir,
+            "gaze_left":       round(gaze_L, 3),
+            "gaze_right":      round(gaze_R, 3),
+            "gaze_difference": round(gaze_diff, 3),
+            "status":          status,
         }
