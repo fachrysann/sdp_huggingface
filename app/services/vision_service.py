@@ -284,11 +284,9 @@ class FaceAnalyzerService:
 
         cv2.putText(image, f"Score: {score}%  |  {status}",
                     (15, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
-        cv2.putText(image, f"Arah: {gaze_dir}",
-                    (15, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
-        cv2.putText(image, f"Gaze L (med→lat): {gaze_L:.3f}",
+        cv2.putText(image, f"Gaze L (med->lat): {gaze_L:.3f}",
                     (15, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.putText(image, f"Gaze R (med→lat): {gaze_R:.3f}",
+        cv2.putText(image, f"Gaze R (med->lat): {gaze_R:.3f}",
                     (15, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         cv2.putText(image, f"Diff: {gaze_diff:.3f}  (threshold normal: <{THRESH_NORMAL})",
                     (15, 132), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 160, 160), 1)
@@ -304,7 +302,6 @@ class FaceAnalyzerService:
         return {
             "symmetry_score":  score,
             "is_symmetrical":  bool(is_sym),
-            "gaze_direction":  gaze_dir,
             "gaze_left":       round(gaze_L, 3),
             "gaze_right":      round(gaze_R, 3),
             "gaze_difference": round(gaze_diff, 3),
