@@ -153,16 +153,51 @@ class FaceAnalyzerService:
     # ==========================================
     # ENDPOINT 2: EYE SYMMETRY
     # ==========================================
-    def get_iris_ratio(self, iris_pt, corner_left, corner_right, w, h):
-        """Helper untuk menghitung rasio posisi iris dengan akurat (menggunakan pixel)"""
-        ix, iy = iris_pt.x * w, iris_pt.y * h
+    def get_iris_center_and_radius(self, landmarks, contour_indices, w, h):
+        """
+        UPGRADE: Menggunakan 4 titik tepi Iris (MediaPipe Iris Contour) 
+        untuk mencari titik tengah (sub-pixel) dan radius secara presisi.
+        """
+        points =[]
+        for idx in contour_indices:
+            pt = landmarks[idx]
+            points.append([pt.x * w, pt.y * h])
+        
+        points = np.array(points, dtype=np.float32)
+        # Cari lingkaran terkecil yang menutupi kontur iris
+        (center_x, center_y), radius = cv2.minEnclosingCircle(points)
+        return (center_x, center_y), radius
+
+    def get_iris_ratio(self, iris_center, corner_left, corner_right, w, h):
+        """
+        UPGRADE: Menggunakan Vector Projection. 
+        Mengabaikan pergeseran vertikal (sumbu Y) sehingga rasio lirikan 
+        tetap akurat 100% meskipun kepala miring atau bentuk mata berbeda.
+        """
+        ix, iy = iris_center
         clx, cly = corner_left.x * w, corner_left.y * h
         crx, cry = corner_right.x * w, corner_right.y * h
         
-        dist_total = math.sqrt((crx - clx)**2 + (cry - cly)**2)
-        dist_iris = math.sqrt((ix - clx)**2 + (iy - cly)**2)
-        if dist_total == 0: return 0.5
-        return dist_iris / dist_total
+        # Vektor Garis Mata (dari sudut dalam ke sudut luar)
+        eye_width_x = crx - clx
+        eye_width_y = cry - cly
+        
+        # Vektor Posisi Iris (dari sudut kiri ke iris center)
+        iris_pos_x = ix - clx
+        iris_pos_y = iy - cly
+        
+        # Dot product (Proyeksi pergerakan iris di sepanjang garis mata)
+        dot_product = (iris_pos_x * eye_width_x) + (iris_pos_y * eye_width_y)
+        
+        # Kuadrat panjang garis mata
+        eye_length_sq = (eye_width_x ** 2) + (eye_width_y ** 2)
+        
+        if eye_length_sq == 0: 
+            return 0.5
+            
+        # Rasio horizontal murni
+        ratio = dot_product / eye_length_sq
+        return max(0.0, min(1.0, ratio)) # Kunci nilai antara 0.0 sampai 1.0
 
     def analyze_eye_symmetry(self, image: np.ndarray):
         """Method Public untuk Endpoint /analyze/eye-symmetry"""
@@ -177,32 +212,44 @@ class FaceAnalyzerService:
         return results, image
 
     def _calculate_eye_symmetry(self, landmarks, image):
-        """Logika kalkulasi dan visualisasi Lirikan mata"""
+        """Logika kalkulasi dan visualisasi Lirikan mata menggunakan MediaPipe Iris"""
         h, w, _ = image.shape
         
-        # Titik Landmark Mata (Sesuai kode asli Anda)
-        l_iris, l_c_l, l_c_r = landmarks[468], landmarks[33], landmarks[133]
-        r_iris, r_c_l, r_c_r = landmarks[473], landmarks[362], landmarks[263]
+        # Titik Sudut Mata (Corners)
+        l_c_l, l_c_r = landmarks[33], landmarks[133]
+        r_c_l, r_c_r = landmarks[362], landmarks[263]
 
-        # Hitung Rasio
-        l_ratio = self.get_iris_ratio(l_iris, l_c_l, l_c_r, w, h)
-        r_ratio = self.get_iris_ratio(r_iris, r_c_l, r_c_r, w, h)
+        # Titik Kontur Tepi MediaPipe Iris (4 titik yang mengelilingi pupil)
+        l_iris_contour =[469, 470, 471, 472] # Kiri
+        r_iris_contour =[474, 475, 476, 477] # Kanan
+
+        # Dapatkan center dan radius yang presisi dari kontur
+        l_iris_center, l_iris_radius = self.get_iris_center_and_radius(landmarks, l_iris_contour, w, h)
+        r_iris_center, r_iris_radius = self.get_iris_center_and_radius(landmarks, r_iris_contour, w, h)
+
+        # Hitung Rasio Lirikan Akurasi Tinggi
+        l_ratio = self.get_iris_ratio(l_iris_center, l_c_l, l_c_r, w, h)
+        r_ratio = self.get_iris_ratio(r_iris_center, r_c_l, r_c_r, w, h)
         
         # Analisis Asimetri
         ratio_diff = abs(l_ratio - r_ratio)
         is_symmetrical = ratio_diff <= 0.10
 
         # Scoring Logic (0 diff = 100%, 0.15 diff = 50%, >0.30 diff = 0%)
-        # Rumus ini diadaptasi agar menghasilkan nilai persen yang masuk akal
         score = max(0, min(100, int(100 - (ratio_diff / 0.15 * 50))))
         
         status_text = "Arah Lirikan Sama (Simetris)" if is_symmetrical else "Arah Lirikan Berbeda (Asimetris)"
         color = (0, 255, 0) if is_symmetrical else (0, 0, 255)
 
         # --- VISUALISASI MATA ---
-        # Gambar titik kuning di pupil
-        for pt in [l_iris, r_iris]:
-            cv2.circle(image, (int(pt.x * w), int(pt.y * h)), 4, (0, 255, 255), -1)
+        
+        # 1. Gambar outline/lingkaran Iris asli (membuktikan Iris Tracking berjalan)
+        cv2.circle(image, (int(l_iris_center[0]), int(l_iris_center[1])), int(l_iris_radius), (0, 255, 255), 1)
+        cv2.circle(image, (int(r_iris_center[0]), int(r_iris_center[1])), int(r_iris_radius), (0, 255, 255), 1)
+        
+        # 2. Gambar titik tengah (pupil)
+        cv2.circle(image, (int(l_iris_center[0]), int(l_iris_center[1])), 2, (0, 0, 255), -1)
+        cv2.circle(image, (int(r_iris_center[0]), int(r_iris_center[1])), 2, (0, 0, 255), -1)
 
         # Dashboard UI
         overlay = image.copy()
