@@ -8,7 +8,7 @@ app_port: 8000
 pinned: false
 ---
 
-# Stroke Detection Pro API 🧠
+# Facial Palsy and Eye Detection API 🧠
 
 <div align="center">
 
