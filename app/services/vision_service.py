@@ -9,21 +9,27 @@ from mediapipe.tasks.python import vision
 
 class FaceAnalyzerService:
     def __init__(self):
+        # 1. Setup Path saat Class dipanggil
         self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.model_dir = os.path.join(self.base_dir, 'model')
         self.model_path = os.path.join(self.model_dir, 'face_landmarker.task')
+
+        # 2. Pastikan model ada, lalu load ke memory
         self._ensure_model_exists()
         self.landmarker = self._initialize_model()
 
     def _ensure_model_exists(self):
+        """Method private untuk download model jika belum ada"""
         if not os.path.exists(self.model_dir):
             os.makedirs(self.model_dir)
+        
         if not os.path.exists(self.model_path):
             print("Downloading MediaPipe model...")
             url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
             urllib.request.urlretrieve(url, self.model_path)
 
     def _initialize_model(self):
+        """Method private untuk inisialisasi MediaPipe"""
         base_options = python.BaseOptions(model_asset_path=self.model_path)
         options = vision.FaceLandmarkerOptions(
             base_options=base_options,
@@ -31,348 +37,271 @@ class FaceAnalyzerService:
             output_facial_transformation_matrixes=False,
             num_faces=1,
             running_mode=vision.RunningMode.IMAGE,
-            min_face_detection_confidence=0.2,
+
+            min_face_detection_confidence=0.2, 
             min_face_presence_confidence=0.2,
             min_tracking_confidence=0.2
         )
         return vision.FaceLandmarker.create_from_options(options)
 
-    # ─────────────────────────────────────────
-    # HELPER: Mobile-adaptive scale
-    # ─────────────────────────────────────────
-    def _get_scale(self, w, h):
-        """Semua ukuran UI di-scale relatif terhadap sisi terpendek gambar (base = 1080px)"""
-        base_dim = min(w, h)
-        s = base_dim / 1080.0
-        return {
-            "s":        s,
-            "font_lg":  s * 1.2,
-            "font_md":  s * 0.85,
-            "font_sm":  s * 0.60,
-            "font_xs":  s * 0.50,
-            "thick_lg": max(2, int(s * 3)),
-            "thick_md": max(1, int(s * 2)),
-            "thick_sm": max(1, int(s * 1.5)),
-            "line_h":   int(s * 55),
-            "pad_x":    int(s * 25),
-            "dot_lg":   max(6,  int(s * 12)),
-            "dot_md":   max(4,  int(s * 8)),
-            "dot_sm":   max(3,  int(s * 5)),
-        }
-
-    # ─────────────────────────────────────────
-    # ENDPOINT 1: FACIAL PALSY
-    # ─────────────────────────────────────────
+    # ==========================================
+    # ENDPOINT 1: FACIAL PALSY 
+    # ==========================================
     def analyze_facial_palsy(self, image: np.ndarray):
+        """Method Public yang akan dipanggil oleh API (main.py/routes.py)"""
+        # Convert ke MediaPipe Image
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
+        
+        # Deteksi Wajah
         detection_result = self.landmarker.detect(mp_image)
+
         if not detection_result.face_landmarks:
-            return None, None
+            return None, None # Kembalikan None jika tidak ada wajah
+
+        # Jalankan logika perhitungan & gambar
         landmarks = detection_result.face_landmarks[0]
         results = self._calculate_and_draw(landmarks, image)
+        
         return results, image
 
     def _calculate_and_draw(self, landmarks, image):
         h, w, _ = image.shape
-        sc = self._get_scale(w, h)
-
+        
         def get_pt(i):
             return int(landmarks[i].x * w), int(landmarks[i].y * h)
 
-        # ── Kalkulasi ──
+        # 1. MATHEMATICAL LOGIC
+        # Points: B=6, T=1, R=61, L=291
         B, T, R, L = get_pt(6), get_pt(1), get_pt(61), get_pt(291)
 
+        # Face Scale
         p33, p263 = landmarks[33], landmarks[263]
         face_scale = math.sqrt((p33.x - p263.x)**2 + (p33.y - p263.y)**2)
 
         def calc_angle(p_target, p_vertex, p_base):
             v1 = np.array([p_target[0] - p_vertex[0], p_target[1] - p_vertex[1]])
-            v2 = np.array([p_base[0]   - p_vertex[0], p_base[1]   - p_vertex[1]])
+            v2 = np.array([p_base[0] - p_vertex[0], p_base[1] - p_vertex[1]])
             dot = np.dot(v1, v2)
             mag1, mag2 = np.linalg.norm(v1), np.linalg.norm(v2)
             if mag1 == 0 or mag2 == 0: return 0
             return math.degrees(math.acos(np.clip(dot / (mag1 * mag2), -1.0, 1.0)))
 
+        # Perhitungan Asimetri
         angle_right = calc_angle(B, R, T)
-        angle_left  = calc_angle(B, L, T)
-        mouth_diff  = abs(angle_right - angle_left)
+        angle_left = calc_angle(B, L, T)
+        mouth_diff = abs(angle_right - angle_left)
 
-        left_eye_open  = landmarks[159].y - landmarks[145].y
+        left_eye_open = landmarks[159].y - landmarks[145].y
         right_eye_open = landmarks[386].y - landmarks[374].y
         eye_asym = abs(left_eye_open - right_eye_open) / face_scale * 10
 
+        # Scoring
         m_pct = (mouth_diff / 10.0) * 100 if mouth_diff > 2.5 else 0
-        e_pct = (eye_asym  / 0.5)   * 100 if eye_asym  > 0.08 else 0
+        e_pct = (eye_asym / 0.5) * 100 if eye_asym > 0.08 else 0
         final_pct = round(min(100, max(m_pct, e_pct)))
 
+        # Severity Logic
         if final_pct > 45:
-            severity, desc, color = "High Severity", "Significant asymmetry. Consult doctor.", (0, 0, 255)
+            severity, desc, color = "High Severity Detected", "Significant asymmetry. Consult doctor.", (0, 0, 255)
         elif final_pct > 15:
             severity, desc, color = "Mild Asymmetry", "Slight deviation. Monitor.", (0, 165, 255)
         else:
-            severity, desc, color = "Normal", "No significant symptoms.", (0, 220, 80)
+            severity, desc, color = "Within Normal Limits", "No significant symptoms.", (0, 255, 0)
 
-        # ── Visualisasi landmark ──
-        # Garis sudut mulut
-        cv2.polylines(image, [np.array([B, R, T])], False, (0, 80, 255),  sc["thick_md"])
-        cv2.polylines(image, [np.array([B, L, T])], False, (0, 80, 255),  sc["thick_md"])
+        # --- VISUALIZATION ---
+        
+        # A. Garis Mulut (Merah)
+        cv2.polylines(image, [np.array([B, R, T])], False, (0, 0, 255), 2)
+        cv2.polylines(image, [np.array([B, L, T])], False, (0, 0, 255), 2)
 
-        # Kontur mata
+        # B. Gambar Mata (Sian & Magenta)
         def draw_eye(indices):
             pts = np.array([get_pt(i) for i in indices], np.int32)
-            cv2.polylines(image, [pts], False, (0, 255, 255), sc["thick_md"])
+            cv2.polylines(image, [pts], False, (255, 255, 0), 2) # Cyan
             for p in pts:
-                cv2.circle(image, p, sc["dot_sm"], (255, 0, 255), -1)
+                cv2.circle(image, p, 3, (255, 0, 255), -1) # Magenta
 
-        draw_eye([130, 161, 160, 159, 158, 157, 133])
-        draw_eye([362, 384, 385, 386, 387, 388, 263])
+        draw_eye([130, 161, 160, 159, 158, 157, 133]) # Kiri
+        draw_eye([362, 384, 385, 386, 387, 388, 263]) # Kanan
 
-        # Label titik B T R L
+        # C. Label B, T, R, L
         for pt, label in [(B, "B"), (T, "T"), (R, "R"), (L, "L")]:
-            cv2.circle(image, pt, sc["dot_lg"], (0, 255, 255), -1)
-            cv2.circle(image, pt, sc["dot_lg"], (0, 0, 0), sc["thick_md"])
-            cv2.putText(image, label,
-                        (pt[0] + sc["dot_lg"] + 4, pt[1] - sc["dot_lg"]),
-                        cv2.FONT_HERSHEY_SIMPLEX, sc["font_md"],
-                        (255, 255, 255), sc["thick_md"])
+            cv2.circle(image, pt, 6, (0, 255, 255), -1) # Kuning
+            cv2.circle(image, pt, 6, (0, 0, 0), 2)       # Border hitam
+            cv2.putText(image, label, (pt[0]+10, pt[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-        # ── Dashboard (mobile-adaptive) ──
-        line_h  = sc["line_h"]
-        pad_x   = sc["pad_x"]
-        dash_h  = line_h * 6 + int(sc["s"] * 20)
-
+        # D. Dashboard
         overlay = image.copy()
-        cv2.rectangle(overlay, (0, 0), (w, dash_h), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.65, image, 0.35, 0, image)
-        cv2.line(image, (0, dash_h), (w, dash_h), (60, 60, 60), sc["thick_sm"])
+        cv2.rectangle(overlay, (0, 0), (400, 160), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
 
-        # Baris 1 – Score
-        y1 = int(line_h * 0.9)
-        cv2.putText(image, f"Score: {final_pct}%",
-                    (pad_x, y1),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_lg"], color, sc["thick_lg"])
-
-        # Baris 2 – Severity
-        y2 = y1 + line_h
-        cv2.putText(image, severity,
-                    (pad_x, y2),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_md"], color, sc["thick_md"])
-
-        # Baris 3 – Mouth diff & Eye asym (dua kolom)
-        y3 = y2 + line_h
-        cv2.putText(image, f"Mouth Diff: {mouth_diff:.1f} deg",
-                    (pad_x, y3),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_sm"], (200, 200, 200), sc["thick_sm"])
-        cv2.putText(image, f"Eye Asym: {eye_asym:.3f}",
-                    (pad_x + w // 2, y3),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_sm"], (200, 200, 200), sc["thick_sm"])
-
-        # Baris 4 – Deskripsi
-        y4 = y3 + int(line_h * 0.85)
-        cv2.putText(image, desc,
-                    (pad_x, y4),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_sm"] * 0.85, (160, 160, 160), sc["thick_sm"])
-
-        # Baris 5 – Progress bar
-        bar_y    = y4 + int(line_h * 0.75)
-        bar_w_px = int(w * 0.60)
-        bar_h_px = max(8, int(sc["s"] * 18))
-        radius   = bar_h_px // 2
-
-        cv2.rectangle(image, (pad_x + radius, bar_y),
-                      (pad_x + bar_w_px - radius, bar_y + bar_h_px), (70, 70, 70), -1)
-        cv2.circle(image, (pad_x + radius,             bar_y + radius), radius, (70, 70, 70), -1)
-        cv2.circle(image, (pad_x + bar_w_px - radius,  bar_y + radius), radius, (70, 70, 70), -1)
-
-        fill_w = max(radius * 2, int(final_pct / 100 * bar_w_px))
-        cv2.rectangle(image, (pad_x + radius, bar_y),
-                      (pad_x + fill_w - radius, bar_y + bar_h_px), color, -1)
-        cv2.circle(image, (pad_x + radius,          bar_y + radius), radius, color, -1)
-        cv2.circle(image, (pad_x + fill_w - radius, bar_y + radius), radius, color, -1)
-
-        cv2.putText(image, "SEVERITY",
-                    (pad_x + bar_w_px + int(sc["s"] * 18), bar_y + bar_h_px - int(sc["s"] * 2)),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_sm"], (160, 160, 160), sc["thick_sm"])
+        # E. Teks Dashboard
+        cv2.putText(image, f"Score: {final_pct}%", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        cv2.putText(image, severity, (15, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        cv2.putText(image, f"Mouth Diff: {mouth_diff:.1f} deg", (15, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(image, f"Eye Asym : {eye_asym:.3f}", (15, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(image, desc, (15, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
         return {
-            "percentage":        final_pct,
-            "severity":          severity,
+            "percentage": final_pct,
+            "severity": severity,
             "is_stroke_detected": final_pct > 35,
-            "mouth_diff":        round(mouth_diff, 2),
-            "eye_asymmetry":     round(eye_asym, 4)
+            "mouth_diff": round(mouth_diff, 2),
+            "eye_asymmetry": round(eye_asym, 4)
         }
-
-    # ─────────────────────────────────────────
-    # ENDPOINT 2: EYE SYMMETRY
-    # ─────────────────────────────────────────
+    
+    # ==========================================
+    # ENDPOINT 2: EYE SYMMETRY (IMPROVED)
+    # ==========================================
     def get_gaze_ratio(self, iris_pt, corner_medial, corner_lateral, w, h):
-        ix  = iris_pt.x * w;  iy  = iris_pt.y * h
-        cmx = corner_medial.x * w;  cmy = corner_medial.y * h
-        clx = corner_lateral.x * w; cly = corner_lateral.y * h
+        """
+        Hitung posisi iris relatif dari sudut MEDIAL ke LATERAL.
+        Return: 0.0 = iris di sudut medial (melirik kearah luar/temporal),
+                1.0 = iris di sudut lateral (melirik ke dalam/nasal)
+        
+        Untuk mata kiri (patient view): medial=33, lateral=133
+        Untuk mata kanan (patient view): medial=263, lateral=362
+        Dengan cara ini, keduanya menggunakan konvensi yang sama:
+        melirik kanan → gaze_L tinggi, gaze_R tinggi (sinkron)
+        """
+        ix  = iris_pt.x * w
+        iy  = iris_pt.y * h
+        cmx = corner_medial.x * w
+        cmy = corner_medial.y * h
+        clx = corner_lateral.x * w
+        cly = corner_lateral.y * h
 
         dist_total = math.sqrt((clx - cmx)**2 + (cly - cmy)**2)
-        if dist_total < 1e-6: return 0.5
+        if dist_total < 1e-6:
+            return 0.5
 
+        # Proyeksi iris ke axis medial→lateral (robust terhadap kepala sedikit miring)
         axis_x = (clx - cmx) / dist_total
         axis_y = (cly - cmy) / dist_total
         proj   = (ix - cmx) * axis_x + (iy - cmy) * axis_y
+
         return max(0.0, min(1.0, proj / dist_total))
 
     def analyze_eye_symmetry(self, image: np.ndarray):
+        """Method Public untuk Endpoint /analyze/eye-symmetry"""
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
         detection_result = self.landmarker.detect(mp_image)
+
         if not detection_result.face_landmarks:
             return None, None
+
         landmarks = detection_result.face_landmarks[0]
         results   = self._calculate_eye_symmetry(landmarks, image)
         return results, image
 
     def _calculate_eye_symmetry(self, landmarks, image):
+        """
+        Logika baru:
+        - gaze_L: ratio iris kiri dari sudut medial (33) ke lateral (133)
+        - gaze_R: ratio iris kanan dari sudut medial (263) ke lateral (362)
+        - Keduanya menggunakan arah MEDIAL→LATERAL yang sama sebagai referensi,
+        sehingga melirik ke arah yang sama = kedua nilai naik/turun bersamaan.
+        - Sinkronisasi: |gaze_L - gaze_R| mendekati 0 = simetris
+        """
         h, w, _ = image.shape
-        sc = self._get_scale(w, h)
 
-        # ── Landmark ──
-        l_iris    = landmarks[468]; l_medial = landmarks[33];  l_lateral = landmarks[133]
-        r_iris    = landmarks[473]; r_medial = landmarks[263]; r_lateral = landmarks[362]
+        # ---- Landmark ----
+        l_iris     = landmarks[468]   # iris kiri
+        l_medial   = landmarks[33]    # sudut medial mata kiri   (dekat hidung)
+        l_lateral  = landmarks[133]   # sudut lateral mata kiri  (dekat telinga)
 
-        # ── Kalkulasi ──
-        gaze_L    = self.get_gaze_ratio(l_iris, l_medial, l_lateral, w, h)
-        gaze_R    = self.get_gaze_ratio(r_iris, r_medial, r_lateral, w, h)
+        r_iris     = landmarks[473]   # iris kanan
+        r_medial   = landmarks[263]   # sudut medial mata kanan  (dekat hidung)
+        r_lateral  = landmarks[362]   # sudut lateral mata kanan (dekat telinga)
+
+        # ---- Gaze ratio (skala 0–1, konvensi SAMA untuk kedua mata) ----
+        gaze_L = self.get_gaze_ratio(l_iris, l_medial, l_lateral, w, h)
+        gaze_R = self.get_gaze_ratio(r_iris, r_medial, r_lateral, w, h)
+
+        # ---- Sinkronisasi ----
         gaze_diff = abs(gaze_L - gaze_R)
 
-        THRESH_NORMAL = 0.04
-        THRESH_MILD   = 0.10
+        # Threshold kalibrasi:
+        #   < 0.07  → normal (variasi natural & mikro-gerak)
+        #   0.07–0.18 → mild asymmetry
+        #   > 0.18   → significant asymmetry
+        THRESH_NORMAL = 0.04   # sebelumnya 0.07 → zona "aman" diperkecil
+        THRESH_MILD   = 0.10   # sebelumnya 0.18 → asimetri ringan lebih cepat terdeteksi
 
         if gaze_diff <= THRESH_NORMAL:
-            score  = int(100 - (gaze_diff / THRESH_NORMAL) * 20)
+            score  = int(100 - (gaze_diff / THRESH_NORMAL) * 20)  # 80–100
             status = "Simetris"
             is_sym = True
             color  = (0, 220, 80)
         elif gaze_diff <= THRESH_MILD:
             t      = (gaze_diff - THRESH_NORMAL) / (THRESH_MILD - THRESH_NORMAL)
-            score  = int(80 - t * 50)
+            score  = int(80 - t * 50)                              # 30–80
             status = "Asimetri Ringan"
             is_sym = False
             color  = (0, 165, 255)
         else:
             t      = min(1.0, (gaze_diff - THRESH_MILD) / 0.08)
-            score  = int(30 - t * 30)
+            score  = int(30 - t * 30)                              # 0–30
             status = "Asimetri Signifikan"
             is_sym = False
             color  = (0, 0, 255)
 
+        # ---- Deteksi arah lirikan ----
+        CENTER = 0.5
+        DEAD_ZONE = 0.12  # zona tengah = dianggap lurus
+
         avg_gaze = (gaze_L + gaze_R) / 2
-        if avg_gaze > 0.62:
+        if avg_gaze > CENTER + DEAD_ZONE:
             gaze_dir = "Melirik Kanan"
-        elif avg_gaze < 0.38:
+        elif avg_gaze < CENTER - DEAD_ZONE:
             gaze_dir = "Melirik Kiri"
         else:
             gaze_dir = "Lurus / Tengah"
 
-        # ── Visualisasi landmark ──
+        # ==================== VISUALISASI ====================
         def lm_px(idx):
             return int(landmarks[idx].x * w), int(landmarks[idx].y * h)
 
-        # Kontur kelopak mata kiri & kanan
-        left_contour  = [33, 246, 161, 160, 159, 158, 157, 173, 133,
-                         155, 154, 153, 145, 144, 163, 7]
-        right_contour = [263, 466, 388, 387, 386, 385, 384, 398, 362,
-                         382, 381, 380, 374, 373, 390, 249]
+        # Titik-titik iris & sudut
+        for idx in [468, 473]:
+            cx, cy = lm_px(idx)
+            cv2.circle(image, (cx, cy), 5, (0, 255, 255), -1)
+            cv2.circle(image, (cx, cy), 5, (0, 0, 0), 1)
 
-        for contour, eye_color in [(left_contour, (255, 200, 0)), (right_contour, (255, 200, 0))]:
-            pts = np.array([lm_px(i) for i in contour], np.int32)
-            cv2.polylines(image, [pts], True, eye_color, sc["thick_md"])
+        for idx in [33, 133, 263, 362]:
+            cx, cy = lm_px(idx)
+            cv2.circle(image, (cx, cy), 4, (255, 200, 0), -1)
 
-        # Iris circle (estimasi radius dari lebar iris)
-        def draw_iris_circle(iris_lm, left_lm, right_lm, dot_color):
-            cx = int(iris_lm.x * w)
-            cy = int(iris_lm.y * h)
-            lx = int(left_lm.x * w)
-            rx = int(right_lm.x * w)
-            # radius ≈ setengah lebar iris (landmark 469-471 kiri, 474-476 kanan)
-            iris_r = max(sc["dot_lg"], int(abs(rx - lx) * 0.5))
-            cv2.circle(image, (cx, cy), iris_r, dot_color, sc["thick_md"])
-            cv2.circle(image, (cx, cy), max(3, iris_r // 4), dot_color, -1)
+        # Garis axis gaze (medial → lateral) tiap mata
+        cv2.arrowedLine(image, lm_px(33),  lm_px(133), (180, 180, 0), 1, tipLength=0.15)
+        cv2.arrowedLine(image, lm_px(263), lm_px(362), (180, 180, 0), 1, tipLength=0.15)
 
-        # Iris kiri: landmark 469(kiri)–471(kanan), iris kanan: 474(kiri)–476(kanan)
-        draw_iris_circle(landmarks[468], landmarks[469], landmarks[471], (0, 255, 255))
-        draw_iris_circle(landmarks[473], landmarks[474], landmarks[476], (0, 255, 255))
-
-        # Garis axis gaze (medial → lateral)
-        cv2.arrowedLine(image, lm_px(33),  lm_px(133), (180, 180, 0), sc["thick_sm"], tipLength=0.08)
-        cv2.arrowedLine(image, lm_px(263), lm_px(362), (180, 180, 0), sc["thick_sm"], tipLength=0.08)
-
-        # Garis vertikal tengah (referensi simetri wajah)
-        nose_top = lm_px(6)
-        nose_bot = lm_px(2)
-        mid_x    = (nose_top[0] + nose_bot[0]) // 2
-        cv2.line(image,
-                 (mid_x, int(h * 0.05)),
-                 (mid_x, int(h * 0.55)),
-                 (120, 120, 120), sc["thick_sm"])
-
-        # ── Dashboard ──
-        line_h = sc["line_h"]
-        pad_x  = sc["pad_x"]
-        dash_h = line_h * 6 + int(sc["s"] * 20)
-
+        # Dashboard
+        dash_w = min(w, 460)
         overlay = image.copy()
-        cv2.rectangle(overlay, (0, 0), (w, dash_h), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.65, image, 0.35, 0, image)
-        cv2.line(image, (0, dash_h), (w, dash_h), (60, 60, 60), sc["thick_sm"])
+        cv2.rectangle(overlay, (0, 0), (dash_w, 170), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
 
-        # Baris 1 – Score
-        y1 = int(line_h * 0.9)
         cv2.putText(image, f"Score: {score}%  |  {status}",
-                    (pad_x, y1),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_lg"], color, sc["thick_lg"])
+                    (15, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+        cv2.putText(image, f"Gaze L (med->lat): {gaze_L:.3f}",
+                    (15, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(image, f"Gaze R (med->lat): {gaze_R:.3f}",
+                    (15, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(image, f"Diff: {gaze_diff:.3f}  (threshold normal: <{THRESH_NORMAL})",
+                    (15, 132), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 160, 160), 1)
 
-        # Baris 2 – Arah lirikan
-        y2 = y1 + line_h
-        cv2.putText(image, f"Arah: {gaze_dir}",
-                    (pad_x, y2),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_md"], (255, 255, 255), sc["thick_md"])
-
-        # Baris 3 – Gaze L & R (dua kolom)
-        y3 = y2 + line_h
-        cv2.putText(image, f"Gaze L: {gaze_L:.3f}",
-                    (pad_x, y3),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_sm"], (200, 200, 200), sc["thick_sm"])
-        cv2.putText(image, f"Gaze R: {gaze_R:.3f}",
-                    (pad_x + w // 2, y3),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_sm"], (200, 200, 200), sc["thick_sm"])
-
-        # Baris 4 – Diff & threshold
-        y4 = y3 + int(line_h * 0.85)
-        cv2.putText(image, f"Diff: {gaze_diff:.3f}   threshold normal < {THRESH_NORMAL}",
-                    (pad_x, y4),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_sm"] * 0.85, (140, 140, 140), sc["thick_sm"])
-
-        # Baris 5 – Progress bar (rounded)
-        bar_y    = y4 + int(line_h * 0.75)
-        bar_w_px = int(w * 0.60)
-        bar_h_px = max(8, int(sc["s"] * 18))
-        radius   = bar_h_px // 2
-
-        cv2.rectangle(image, (pad_x + radius, bar_y),
-                      (pad_x + bar_w_px - radius, bar_y + bar_h_px), (70, 70, 70), -1)
-        cv2.circle(image, (pad_x + radius,            bar_y + radius), radius, (70, 70, 70), -1)
-        cv2.circle(image, (pad_x + bar_w_px - radius, bar_y + radius), radius, (70, 70, 70), -1)
-
-        fill_w = max(radius * 2, int(score / 100 * bar_w_px))
-        cv2.rectangle(image, (pad_x + radius, bar_y),
-                      (pad_x + fill_w - radius, bar_y + bar_h_px), color, -1)
-        cv2.circle(image, (pad_x + radius,          bar_y + radius), radius, color, -1)
-        cv2.circle(image, (pad_x + fill_w - radius, bar_y + radius), radius, color, -1)
-
-        cv2.putText(image, "SYNC",
-                    (pad_x + bar_w_px + int(sc["s"] * 18), bar_y + bar_h_px - int(sc["s"] * 2)),
-                    cv2.FONT_HERSHEY_SIMPLEX, sc["font_sm"], (160, 160, 160), sc["thick_sm"])
+        # Progress bar sinkronisasi
+        bar_x, bar_y, bar_w_px = 15, 150, 200
+        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w_px, bar_y + 12), (80, 80, 80), -1)
+        fill = int(score / 100 * bar_w_px)
+        cv2.rectangle(image, (bar_x, bar_y), (bar_x + fill, bar_y + 12), color, -1)
+        cv2.putText(image, "sync", (bar_x + bar_w_px + 8, bar_y + 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 160), 1)
 
         return {
             "symmetry_score":  score,
             "is_symmetrical":  bool(is_sym),
-            "gaze_direction":  gaze_dir,
             "gaze_left":       round(gaze_L, 3),
             "gaze_right":      round(gaze_R, 3),
             "gaze_difference": round(gaze_diff, 3),
