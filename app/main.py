@@ -5,7 +5,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import ALLOWED_ORIGINS
 from app.api.routes import router as api_router
 
-app = FastAPI(title="Stroke Facial Analyzer API")
+tags_metadata =[
+    {"name": "Vision Analysis", "description": "Endpoints for facial palsy and eye symmetry detection."},
+    {"name": "Tabular Prediction", "description": "Endpoints for stroke risk prediction using patient data."},
+    {"name": "Speech Analysis", "description": "Endpoints for detecting Dysarthria from voice recordings."}
+]
+
+app = FastAPI(
+    title="Stroke Facial Analyzer API",
+    description="An AI-powered API to assist in assessing Stroke symptoms including Facial Palsy, Eye Symmetry, Speech Dysarthria, and Tabular Risk prediction.",
+    version="1.0.0",
+    openapi_tags=tags_metadata,
+)
 
 # Setup CORS
 app.add_middleware(

@@ -17,7 +17,7 @@ audio_instance = AudioAnalyzerService()
 def get_analyzer():
     return analyzer_instance
 
-def get_predictor(): # <--- Tambahkan ini
+def get_predictor(): 
     return predictor_instance
 
 def get_audio_analyzer():
@@ -26,11 +26,11 @@ def get_audio_analyzer():
 # --- HELPER FUNCTION: Untuk mengolah gambar yang diupload ---
 async def process_uploaded_image(file: UploadFile):
     if file.content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(status_code=415, detail="Unsupported media type.")
+        raise HTTPException(status_code=415, detail="Unsupported media type. Only JPEG/PNG are allowed.")
 
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="Payload too large.")
+        raise HTTPException(status_code=413, detail="Payload too large. File exceeds maximum allowed size.")
 
     try:
         nparr = np.frombuffer(contents, np.uint8)
@@ -49,16 +49,28 @@ async def process_uploaded_audio(file: UploadFile):
     # Validasi Ukuran & Baca File
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="Payload too large.")
+        raise HTTPException(status_code=413, detail="Payload too large. File exceeds maximum allowed size.")
     return contents
-
 
 # ==================================================
 # ENDPOINT 1: FACIAL PALSY (Deteksi Senyum/Mulut)
 # ==================================================
-@router.post("/analyze/facial-palsy")
+@router.post(
+    "/analyze/facial-palsy",
+    tags=["Vision Analysis"],
+    summary="Detect Facial Palsy (Mouth/Smile Symmetry)",
+    description="Uploads a facial image and analyzes it for asymmetric features related to facial palsy, particularly around the mouth and jawline. Returns the severity score and a base64 encoded visualization.",
+    responses={
+        200: {"description": "Successfully analyzed the face."},
+        400: {"description": "Invalid or corrupted image data."},
+        403: {"description": "Forbidden: Invalid or missing API Key."},
+        413: {"description": "Payload too large (File exceeds 5MB)."},
+        415: {"description": "Unsupported media type (Only JPEG/PNG allowed)."},
+        500: {"description": "Internal server error during analysis."}
+    }
+)
 async def analyze_facial_palsy(
-    file: UploadFile = File(...), 
+    file: UploadFile = File(..., description="Image file (JPEG, PNG) containing a clear view of the patient's face"), 
     api_key: str = Depends(get_api_key),
     analyzer: FaceAnalyzerService = Depends(get_analyzer)
 ):
@@ -81,13 +93,25 @@ async def analyze_facial_palsy(
         print(f"Server Error: {str(e)}")
         raise HTTPException(status_code=500, detail="An error occurred during processing.")
 
-
 # ==================================================
 # ENDPOINT 2: EYE SYMMETRY (Deteksi Lirikan Mata)
 # ==================================================
-@router.post("/analyze/eye-symmetry")
+@router.post(
+    "/analyze/eye-symmetry",
+    tags=["Vision Analysis"],
+    summary="Analyze Eye Symmetry (Gaze Detection)",
+    description="Uploads an image to evaluate the symmetry of eye gaze and pupil coordination. Helps in detecting asymmetrical eye movements associated with strokes.",
+    responses={
+        200: {"description": "Successfully analyzed eye symmetry."},
+        400: {"description": "Invalid or corrupted image data."},
+        403: {"description": "Forbidden: Invalid or missing API Key."},
+        413: {"description": "Payload too large (File exceeds 5MB)."},
+        415: {"description": "Unsupported media type (Only JPEG/PNG allowed)."},
+        500: {"description": "Internal server error during analysis."}
+    }
+)
 async def analyze_eye_symmetry(
-    file: UploadFile = File(...), 
+    file: UploadFile = File(..., description="Image file (JPEG, PNG) with clear visibility of both eyes"), 
     api_key: str = Depends(get_api_key),
     analyzer: FaceAnalyzerService = Depends(get_analyzer)
 ):
@@ -118,7 +142,19 @@ async def analyze_eye_symmetry(
 # ==================================================
 # ENDPOINT 3: TABULAR STROKE PREDICTION
 # ==================================================
-@router.post("/predict/tabular-data")
+@router.post(
+    "/predict/tabular-data",
+    tags=["Tabular Prediction"],
+    summary="Predict Stroke Risk from Patient Data",
+    description="Receives tabular patient metadata (Age, BMI, Glucose Levels, etc.) and runs it through a Random Forest Machine Learning model to calculate the probability of a stroke.",
+    responses={
+        200: {"description": "Successfully predicted stroke risk."},
+        400: {"description": "Bad Request: Missing or invalid required features (e.g., invalid gender value)."},
+        403: {"description": "Forbidden: Invalid or missing API Key."},
+        422: {"description": "Validation Error: Incorrect data types provided in the JSON body."},
+        500: {"description": "Internal server error during ML model prediction."}
+    }
+)
 async def predict_stroke(
     data: StrokePredictorInput, 
     api_key: str = Depends(get_api_key),
@@ -136,15 +172,26 @@ async def predict_stroke(
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         print(f"Server Error: {str(e)}")
-        # UBAH BARIS DI BAWAH INI SEMENTARA UNTUK MELIHAT ERROR
         raise HTTPException(status_code=500, detail=f"Error ML: {str(e)}")
-    
+
 # ==================================================
 # ENDPOINT 4: AUDIO CLASSIFICATION (DYSARTHRIA)
 # ==================================================
-@router.post("/analyze/speech")
+@router.post(
+    "/analyze/speech",
+    tags=["Speech Analysis"],
+    summary="Detect Dysarthria from Speech",
+    description="Uploads a voice recording (.wav) to detect signs of Dysarthria (slurred speech) often associated with strokes. Converts audio to Mel-Spectrogram and runs it through a ResNet-18 model.",
+    responses={
+        200: {"description": "Successfully analyzed speech recording."},
+        403: {"description": "Forbidden: Invalid or missing API Key."},
+        413: {"description": "Payload too large (File exceeds 5MB)."},
+        415: {"description": "Unsupported media type (Only .wav allowed)."},
+        500: {"description": "Internal server error processing the audio."}
+    }
+)
 async def analyze_speech(
-    file: UploadFile = File(...),
+    file: UploadFile = File(..., description="Audio file in .wav format containing the patient's speech"),
     api_key: str = Depends(get_api_key),
     audio_analyzer: AudioAnalyzerService = Depends(get_audio_analyzer)
 ):
