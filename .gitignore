@@ -37,17 +37,6 @@ build/
 # 4. MACHINE LEARNING MODELS & DATA (LARGE FILES)
 # ==========================================
 # Large model files that are auto-downloaded at runtime
-model/
-models/
-*.task
-*.tflite
-*.pb
-*.pbtxt
-*.h5
-*.weights
-*.hdf5
-data/
-datasets/
 
 # ==========================================
 # 5. TESTING & LOGS
