@@ -12,7 +12,7 @@ tags_metadata =[
 ]
 
 app = FastAPI(
-    title="Stroke Facial Analyzer API",
+    title="Stroke Detect Pro API",
     description="An AI-powered API to assist in assessing Stroke symptoms including Facial Palsy, Eye Symmetry, Speech Dysarthria, and Tabular Risk prediction.",
     version="1.0.0",
     openapi_tags=tags_metadata,
