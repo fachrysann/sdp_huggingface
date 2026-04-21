@@ -153,128 +153,129 @@ class FaceAnalyzerService:
     # ==========================================
     # ENDPOINT 2: EYE SYMMETRY
     # ==========================================
-    def get_iris_center_and_radius(self, landmarks, contour_indices, w, h):
-        """
-        UPGRADE: Menggunakan 4 titik tepi Iris (MediaPipe Iris Contour) 
-        untuk mencari titik tengah (sub-pixel) dan radius secara presisi.
-        """
-        points =[]
-        for idx in contour_indices:
-            pt = landmarks[idx]
-            points.append([pt.x * w, pt.y * h])
-        
-        points = np.array(points, dtype=np.float32)
-        # Cari lingkaran terkecil yang menutupi kontur iris
-        (center_x, center_y), radius = cv2.minEnclosingCircle(points)
-        return (center_x, center_y), radius
-
-    def get_iris_ratio(self, iris_center, corner_left, corner_right, w, h):
-        """
-        UPGRADE: Menggunakan Vector Projection. 
-        Mengabaikan pergeseran vertikal (sumbu Y) sehingga rasio lirikan 
-        tetap akurat 100% meskipun kepala miring atau bentuk mata berbeda.
-        """
-        ix, iy = iris_center
-        clx, cly = corner_left.x * w, corner_left.y * h
-        crx, cry = corner_right.x * w, corner_right.y * h
-        
-        # Vektor Garis Mata (dari sudut dalam ke sudut luar)
-        eye_width_x = crx - clx
-        eye_width_y = cry - cly
-        
-        # Vektor Posisi Iris (dari sudut kiri ke iris center)
-        iris_pos_x = ix - clx
-        iris_pos_y = iy - cly
-        
-        # Dot product (Proyeksi pergerakan iris di sepanjang garis mata)
-        dot_product = (iris_pos_x * eye_width_x) + (iris_pos_y * eye_width_y)
-        
-        # Kuadrat panjang garis mata
-        eye_length_sq = (eye_width_x ** 2) + (eye_width_y ** 2)
-        
-        if eye_length_sq == 0: 
-            return 0.5
-            
-        # Rasio horizontal murni
-        ratio = dot_product / eye_length_sq
-        return max(0.0, min(1.0, ratio)) # Kunci nilai antara 0.0 sampai 1.0
-
-    def analyze_eye_symmetry(self, image: np.ndarray):
-        """Method Public untuk Endpoint /analyze/eye-symmetry"""
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
-        detection_result = self.landmarker.detect(mp_image)
-
-        if not detection_result.face_landmarks:
-            return None, None
-
-        landmarks = detection_result.face_landmarks[0]
-        results = self._calculate_eye_symmetry(landmarks, image)
-        return results, image
-
     def _calculate_eye_symmetry(self, landmarks, image):
         """Logika kalkulasi dan visualisasi Lirikan mata menggunakan MediaPipe Iris"""
         h, w, _ = image.shape
-        
+
         # Titik Sudut Mata (Corners)
         l_c_l, l_c_r = landmarks[33], landmarks[133]
         r_c_l, r_c_r = landmarks[362], landmarks[263]
 
-        # Titik Kontur Tepi MediaPipe Iris (4 titik yang mengelilingi pupil)
-        l_iris_contour =[469, 470, 471, 472] # Kiri
-        r_iris_contour =[474, 475, 476, 477] # Kanan
+        # Titik Kontur Tepi MediaPipe Iris
+        l_iris_contour = [469, 470, 471, 472]
+        r_iris_contour = [474, 475, 476, 477]
 
         # Dapatkan center dan radius yang presisi dari kontur
         l_iris_center, l_iris_radius = self.get_iris_center_and_radius(landmarks, l_iris_contour, w, h)
         r_iris_center, r_iris_radius = self.get_iris_center_and_radius(landmarks, r_iris_contour, w, h)
 
-        # Hitung Rasio Lirikan Akurasi Tinggi
+        # Hitung Rasio Lirikan
         l_ratio = self.get_iris_ratio(l_iris_center, l_c_l, l_c_r, w, h)
         r_ratio = self.get_iris_ratio(r_iris_center, r_c_l, r_c_r, w, h)
-        
-        # Analisis Asimetri
-        ratio_diff = abs(l_ratio - r_ratio)
-        is_symmetrical = ratio_diff <= 0.10
 
-        # Scoring Logic (0 diff = 100%, 0.15 diff = 50%, >0.30 diff = 0%)
-        score = max(0, min(100, int(100 - (ratio_diff / 0.15 * 50))))
-        
+        # -------------------------------------------------------------------------
+        # UPGRADE: HEAD POSE COMPENSATION via facial midline
+        # Nose tip (1) dan midpoint antara kedua eye corners -> estimasi yaw bias
+        # Jika kepala miring ke kanan, l_ratio naik dan r_ratio turun secara bersamaan.
+        # Kita koreksi dengan menghitung bias rata-rata lalu shift kedua rasio.
+        # -------------------------------------------------------------------------
+        nose_tip = landmarks[1]
+        nose_x = nose_tip.x * w
+
+        # Midpoint horizontal antara inner corners kedua mata (landmark 133 & 362)
+        inner_l_x = landmarks[133].x * w
+        inner_r_x = landmarks[362].x * w
+        eye_midpoint_x = (inner_l_x + inner_r_x) / 2.0
+
+        # Lebar wajah estimasi (jarak outer corners)
+        face_width = abs(landmarks[263].x * w - landmarks[33].x * w)
+        if face_width > 0:
+            # Seberapa jauh hidung bergeser dari garis tengah mata (normalized -0.5..0.5)
+            yaw_bias = (nose_x - eye_midpoint_x) / face_width
+        else:
+            yaw_bias = 0.0
+
+        # Kompensasi: geser kedua rasio berlawanan arah bias yaw
+        # Koefisien 0.5 didapat dari observasi bahwa 1 unit bias ~ 0.5 unit ratio shift
+        COMPENSATION_COEFF = 0.5
+        l_ratio_compensated = np.clip(l_ratio - yaw_bias * COMPENSATION_COEFF, 0.0, 1.0)
+        r_ratio_compensated = np.clip(r_ratio + yaw_bias * COMPENSATION_COEFF, 0.0, 1.0)
+
+        # -------------------------------------------------------------------------
+        # UPGRADE: GAZE CONVERGENCE CHECK
+        # Untuk pandangan lurus/simetris, kedua rasio harus mendekati 0.5.
+        # Untuk pandangan menyerong tapi simetris (keduanya lirik kiri misal),
+        # selisih tetap kecil tapi keduanya sama-sama jauh dari 0.5.
+        # Kita pakai dua komponen:
+        #   1. ratio_diff         -> apakah kedua mata bergerak BERSAMA (konsistensi)
+        #   2. convergence_error  -> apakah arah lirikan MASUK AKAL secara binokuler
+        #      (mata kiri & kanan seharusnya mirror satu sama lain di sumbu wajah)
+        # -------------------------------------------------------------------------
+        ratio_diff = abs(l_ratio_compensated - r_ratio_compensated)
+
+        # Mirror check: untuk simetri sejati, (l_ratio) + (1 - r_ratio) harus ~ 1.0
+        # Contoh: keduanya lirik kiri -> l=0.3, r=0.3
+        #   mirror_sum = 0.3 + (1-0.3) = 1.0  ✓ simetris
+        # Keduanya lirik berlainan -> l=0.3, r=0.7
+        #   mirror_sum = 0.3 + (1-0.7) = 0.6  ✗ asimetris
+        mirror_sum = l_ratio_compensated + (1.0 - r_ratio_compensated)
+        convergence_error = abs(mirror_sum - 1.0)  # 0.0 = perfect, makin besar makin asimetris
+
+        # -------------------------------------------------------------------------
+        # UPGRADE: WEIGHTED COMPOSITE SCORE
+        # ratio_diff      -> bobot 60% (perbedaan langsung antar mata)
+        # convergence_err -> bobot 40% (validasi arah binokuler)
+        # Kedua komponen dinormalisasi ke skala yang sama (max_error = 0.5)
+        # -------------------------------------------------------------------------
+        MAX_ERROR = 0.5  # nilai maksimal teoritis untuk normalisasi
+        normalized_diff = min(ratio_diff / MAX_ERROR, 1.0)
+        normalized_conv = min(convergence_error / MAX_ERROR, 1.0)
+
+        composite_error = (0.6 * normalized_diff) + (0.4 * normalized_conv)
+        score = int(round(max(0.0, min(100.0, (1.0 - composite_error) * 100))))
+
+        # -------------------------------------------------------------------------
+        # UPGRADE: ADAPTIVE THRESHOLD untuk is_symmetrical
+        # Threshold tidak lagi fixed 0.10 — melainkan proporsional terhadap
+        # seberapa ekstrem lirikannya. Lirikan ekstrem (jauh dari center)
+        # secara alami lebih sulit presisi, jadi toleransinya sedikit lebih longgar.
+        # -------------------------------------------------------------------------
+        avg_deviation = (abs(l_ratio_compensated - 0.5) + abs(r_ratio_compensated - 0.5)) / 2.0
+        adaptive_threshold = 0.06 + (avg_deviation * 0.10)  # 0.06 (center) ~ 0.11 (extreme)
+        is_symmetrical = (ratio_diff <= adaptive_threshold) and (convergence_error <= adaptive_threshold * 1.5)
+
         status_text = "Arah Lirikan Sama (Simetris)" if is_symmetrical else "Arah Lirikan Berbeda (Asimetris)"
         color = (0, 255, 0) if is_symmetrical else (0, 0, 255)
 
-        # --- VISUALISASI MATA ---
-        
-        # 1. Gambar outline/lingkaran Iris asli (membuktikan Iris Tracking berjalan)
+        # --- VISUALISASI MATA --- (tidak berubah)
         cv2.circle(image, (int(l_iris_center[0]), int(l_iris_center[1])), int(l_iris_radius), (0, 255, 255), 1)
         cv2.circle(image, (int(r_iris_center[0]), int(r_iris_center[1])), int(r_iris_radius), (0, 255, 255), 1)
-        
-        # 2. Gambar titik tengah (pupil)
         cv2.circle(image, (int(l_iris_center[0]), int(l_iris_center[1])), 2, (0, 0, 255), -1)
         cv2.circle(image, (int(r_iris_center[0]), int(r_iris_center[1])), 2, (0, 0, 255), -1)
 
-        # Dashboard UI
         overlay = image.copy()
-        cv2.rectangle(overlay, (0, 0), (max(400, int(w*0.6)), 160), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (0, 0), (max(400, int(w * 0.6)), 175), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
 
         cv2.putText(image, status_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
         cv2.putText(image, f"Symmetry Score: {score}%", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(image, f"Diff: {ratio_diff:.3f}", (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(image, f"Diff: {ratio_diff:.3f}  Conv Err: {convergence_error:.3f}", (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+        cv2.putText(image, f"Yaw Bias: {yaw_bias:+.3f}  Threshold: {adaptive_threshold:.3f}", (20, 132), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
 
-        # Visual Slider Koordinasi (Bar progres)
-        bar_x, bar_y, bar_w = 20, 130, 200
+        bar_x, bar_y, bar_w = 20, 150, 200
         cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + 10), (100, 100, 100), -1)
-        
-        l_pos = int(bar_x + (l_ratio * bar_w))
-        r_pos = int(bar_x + (r_ratio * bar_w))
-        
-        cv2.circle(image, (l_pos, bar_y + 5), 6, (255, 0, 0), -1) # Biru (Mata Kiri)
-        cv2.circle(image, (r_pos, bar_y + 5), 6, (0, 0, 255), -1) # Merah (Mata Kanan)
+        l_pos = int(bar_x + (l_ratio_compensated * bar_w))
+        r_pos = int(bar_x + (r_ratio_compensated * bar_w))
+        cv2.circle(image, (l_pos, bar_y + 5), 6, (255, 0, 0), -1)
+        cv2.circle(image, (r_pos, bar_y + 5), 6, (0, 0, 255), -1)
 
         return {
             "symmetry_score": score,
             "is_symmetrical": bool(is_symmetrical),
-            "left_eye_ratio": round(l_ratio, 3),
-            "right_eye_ratio": round(r_ratio, 3),
+            "left_eye_ratio": round(l_ratio_compensated, 3),
+            "right_eye_ratio": round(r_ratio_compensated, 3),
             "ratio_difference": round(ratio_diff, 3),
+            "convergence_error": round(convergence_error, 3),
+            "yaw_bias": round(yaw_bias, 3),
             "status": status_text
         }
