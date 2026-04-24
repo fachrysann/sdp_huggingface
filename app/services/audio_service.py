@@ -10,14 +10,15 @@ class AudioAnalyzerService:
         # Setup Path
         self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.model_dir = os.path.join(self.base_dir, 'model')
-        self.model_path = os.path.join(self.model_dir, 'model_scripted_resnet18_cpu.pt')
+        
+        # 1. Pastikan nama file mengarah ke model binary kamu
+        self.model_path = os.path.join(self.model_dir, 'model_scripted_resnet18_cpu-binary.pt')
 
-        self.CLASSES =[
-            "mali-control", "mali-dysarthria", "no-control", "no-dysarthria",
-            "salva-control", "salva-dysarthria", "sei-control", "sei-dysarthria",
-            "si-control", "si-dysarthria", "stop-control", "stop-dysarthria",
-            "uno-control", "uno-dysarthria", "zero-control", "zero-dysarthria"
-        ]
+        # 2. Sesuaikan nama kelas menjadi Binary.
+        # HARUS BERURUTAN sesuai folder alfabet saat training. 
+        # Misal foldernya "Control" dan "Dysarthria"
+        self.CLASSES = ["Dysarthria", "Non-Dysarthria"]
+        
         self.SAMPLE_RATE = 16000
         self.MAX_TIME_STEPS = 192
 
@@ -33,7 +34,8 @@ class AudioAnalyzerService:
             raise FileNotFoundError(f"Model Audio tidak ditemukan di {self.model_path}")
         
         try:
-            self.model = torch.jit.load(self.model_path)
+            # Tambahkan map_location="cpu" agar aman dijalankan di server tanpa GPU
+            self.model = torch.jit.load(self.model_path, map_location="cpu")
             self.model.eval()
         except Exception as e:
             raise RuntimeError(f"Gagal memuat model audio: {e}")
@@ -43,24 +45,29 @@ class AudioAnalyzerService:
         audio_data, sr = sf.read(io.BytesIO(file_bytes))
         waveform = torch.tensor(audio_data, dtype=torch.float32)
         
+        # Penanganan Channel (Jadikan Mono)
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0) 
         else:
             waveform = waveform.transpose(0, 1) 
             waveform = torch.mean(waveform, dim=0, keepdim=True) 
 
+        # Resample jika diperlukan
         if sr != self.SAMPLE_RATE:
             resampler = T.Resample(orig_freq=sr, new_freq=self.SAMPLE_RATE)
             waveform = resampler(waveform)
 
+        # Safeguard panjang audio (Zero Padding jika terlalu pendek)
         if waveform.shape[1] < self.mel_spectrogram.n_fft:
             pad_amount = self.mel_spectrogram.n_fft - waveform.shape[1]
             waveform = F.pad(waveform, (0, pad_amount), mode='constant', value=0.0)
 
+        # Ekstraksi Fitur
         mel_spec = self.mel_spectrogram(waveform)
         mel_spec = self.amplitude_to_db(mel_spec)
         mel_spec = (mel_spec - mel_spec.mean()) / (mel_spec.std() + 1e-6)
 
+        # Truncating / Padding Waktu
         time_steps = mel_spec.shape[2]
         if time_steps < self.MAX_TIME_STEPS:
             pad_amount = self.MAX_TIME_STEPS - time_steps
@@ -71,7 +78,7 @@ class AudioAnalyzerService:
         return mel_spec.unsqueeze(0)
 
     def predict_audio(self, file_bytes: bytes):
-        """Method utama untuk prediksi"""
+        """Method utama untuk prediksi Binary"""
         input_tensor = self.process_audio(file_bytes)
         
         with torch.no_grad():
@@ -83,12 +90,14 @@ class AudioAnalyzerService:
             predicted_class = self.CLASSES[predicted_idx]
             
             all_probs = {self.CLASSES[i]: round(float(probabilities[i]) * 100, 2) for i in range(len(self.CLASSES))}
-            word, speaker_type = predicted_class.split('-')
+
+            # 3. Hapus logika split('-') karena nama kelas sudah binary.
+            # Kita bisa menambahkan status yang lebih ramah pengguna.
+            assessment_status = "Terindikasi Gejala Disartria" if predicted_class.lower() == "dysarthria" else "Suara Normal (Kontrol)"
 
             return {
                 "class": predicted_class,
-                "word": word,
-                "speaker_type": speaker_type,
+                "assessment": assessment_status,
                 "confidence_percentage": round(confidence * 100, 2),
                 "all_probabilities": all_probs
             }
