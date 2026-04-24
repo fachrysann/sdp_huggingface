@@ -52,6 +52,27 @@ async def process_uploaded_audio(file: UploadFile):
         raise HTTPException(status_code=413, detail="Payload too large. File exceeds maximum allowed size.")
     return contents
 
+# --- HELPER FUNCTION: Kompresi Base64 Khusus Mobile ---
+def encode_image_for_mobile(img_array, max_width=720, jpeg_quality=75):
+    """
+    Me-resize gambar jika terlalu besar dan mengompresnya ke JPEG
+    agar teks Base64 tidak membebani aplikasi mobile.
+    """
+    h, w = img_array.shape[:2]
+    
+    # 1. Resize jika lebar gambar melebihi batas maksimal (misal 720px)
+    if w > max_width:
+        ratio = max_width / float(w)
+        new_h = int(h * ratio)
+        img_array = cv2.resize(img_array, (max_width, new_h), interpolation=cv2.INTER_AREA)
+    
+    # 2. Kompres ke JPEG (mengurangi ukuran file tanpa merusak visualisasi garis/titik)
+    encode_param =[int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
+    _, buffer = cv2.imencode('.jpg', img_array, encode_param)
+    
+    # 3. Ubah ke teks Base64
+    return base64.b64encode(buffer).decode('utf-8')
+
 # ==================================================
 # ENDPOINT 1: FACIAL PALSY (Deteksi Senyum/Mulut)
 # ==================================================
@@ -81,8 +102,10 @@ async def analyze_facial_palsy(
         if results is None:
             return {"status": "error", "message": "No face detected"}
 
-        _, buffer = cv2.imencode('.jpg', processed_img)
-        img_base64 = base64.b64encode(buffer).decode('utf-8')
+        # _, buffer = cv2.imencode('.jpg', processed_img)
+        # img_base64 = base64.b64encode(buffer).decode('utf-8')
+
+        img_base64 = encode_image_for_mobile(processed_img)
 
         return {
             "status": "success",
@@ -126,8 +149,9 @@ async def analyze_eye_symmetry(
             return {"status": "error", "message": "No face detected"}
 
         # 3. Encode hasil ke Base64
-        _, buffer = cv2.imencode('.jpg', processed_img)
-        img_base64 = base64.b64encode(buffer).decode('utf-8')
+        # _, buffer = cv2.imencode('.jpg', processed_img)
+        # img_base64 = base64.b64encode(buffer).decode('utf-8')
+        img_base64 = encode_image_for_mobile(processed_img)
 
         # 4. Kembalikan Response
         return {
