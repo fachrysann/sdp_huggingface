@@ -143,7 +143,7 @@ async def analyze_eye_symmetry(
 # ENDPOINT 3: TABULAR STROKE PREDICTION
 # ==================================================
 @router.post(
-    "/predict/tabular-data",
+    "/predict/riskometer",
     tags=["Riskometer Prediction"],
     summary="Predict Stroke Risk from Patient Data",
     description="Receives tabular patient metadata (Age, BMI, Glucose Levels, etc.) and runs it through a Random Forest Machine Learning model to calculate the probability of a stroke.",
@@ -178,7 +178,7 @@ async def predict_stroke(
 # ENDPOINT 4: AUDIO CLASSIFICATION (DYSARTHRIA)
 # ==================================================
 @router.post(
-    "/analyze/speech",
+    "/analyze/speech-dysarthria",
     tags=["Speech Dysarthria Analysis"],
     summary="Detect Dysarthria from Speech",
     description="Uploads a voice recording (.wav) to detect signs of Dysarthria (slurred speech) often associated with strokes. Converts audio to Mel-Spectrogram and runs it through a ResNet-18 model.",
