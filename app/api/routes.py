@@ -57,8 +57,8 @@ async def process_uploaded_audio(file: UploadFile):
 # ==================================================
 @router.post(
     "/analyze/facial-palsy",
-    tags=["Vision Analysis"],
-    summary="Detect Facial Palsy (Mouth/Smile Symmetry)",
+    tags=["Facial Symmetry Analysis"],
+    summary="Detect Facial Palsy (Face Symmetry)",
     description="Uploads a facial image and analyzes it for asymmetric features related to facial palsy, particularly around the mouth and jawline. Returns the severity score and a base64 encoded visualization.",
     responses={
         200: {"description": "Successfully analyzed the face."},
@@ -98,7 +98,7 @@ async def analyze_facial_palsy(
 # ==================================================
 @router.post(
     "/analyze/eye-symmetry",
-    tags=["Vision Analysis"],
+    tags=["Facial Symmetry Analysis"],
     summary="Analyze Eye Symmetry (Gaze Detection)",
     description="Uploads an image to evaluate the symmetry of eye gaze and pupil coordination. Helps in detecting asymmetrical eye movements associated with strokes.",
     responses={
@@ -144,7 +144,7 @@ async def analyze_eye_symmetry(
 # ==================================================
 @router.post(
     "/predict/tabular-data",
-    tags=["Tabular Prediction"],
+    tags=["Riskometer Prediction"],
     summary="Predict Stroke Risk from Patient Data",
     description="Receives tabular patient metadata (Age, BMI, Glucose Levels, etc.) and runs it through a Random Forest Machine Learning model to calculate the probability of a stroke.",
     responses={
@@ -179,7 +179,7 @@ async def predict_stroke(
 # ==================================================
 @router.post(
     "/analyze/speech",
-    tags=["Speech Analysis"],
+    tags=["Speech Dysarthria Analysis"],
     summary="Detect Dysarthria from Speech",
     description="Uploads a voice recording (.wav) to detect signs of Dysarthria (slurred speech) often associated with strokes. Converts audio to Mel-Spectrogram and runs it through a ResNet-18 model.",
     responses={
