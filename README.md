@@ -207,6 +207,8 @@ Memprediksi kelas & probabilitas risiko stroke pasien menggunakan algoritma *Ran
 ### 4️⃣ AUDIO: Deteksi Dysarthria (Analisis Suara)
 Menganalisis rekaman suara (*Mel-Spectrogram*) menggunakan model *ResNet-18 Binary* untuk mendeteksi *slurred speech* (Disartria).
 
+![Ilustrasi Arsitektur](assets/resnet34.png)
+
 - **URL:** `POST /api/v1/analyze/speech-dysarthria`
 - **Request:** `multipart/form-data` -> `file` (Audio berektensi `.wav`)
 - **Response:**
