@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Import dari module app
 from app.config import ALLOWED_ORIGINS
 from app.api.routes import router as api_router
-from app.schemas import configure_openapi_schemas # Import fungsi barunya
+from app.schemas import configure_openapi_schemas 
 
 tags_metadata =[
     {"name": "Facial Symmetry Analysis", "description": "Endpoints for facial palsy and eye symmetry detection."},
