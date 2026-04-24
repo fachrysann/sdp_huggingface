@@ -1,3 +1,6 @@
+import json
+from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 
 class StrokePredictorInput(BaseModel):
@@ -26,3 +29,34 @@ class StrokePredictorInput(BaseModel):
             ]
         }
     }
+
+def configure_openapi_schemas(app: FastAPI):
+    
+    def custom_openapi():
+        if app.openapi_schema:
+            return app.openapi_schema
+
+        openapi_schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+            tags=app.openapi_tags,
+        )
+
+        schema_str = json.dumps(openapi_schema)
+
+        # Kamus Find & Replace
+        replacements = {
+            "Body_analyze_facial_palsy_api_v1_analyze_facial_palsy_post": "FacialPalsyUpload",
+            "Body_analyze_eye_symmetry_api_v1_analyze_eye_symmetry_post": "EyeSymmetryUpload",
+            "Body_analyze_speech_api_v1_analyze_speech_dysarthria_post": "SpeechAudioUpload",
+        }
+
+        for old_name, new_name in replacements.items():
+            schema_str = schema_str.replace(old_name, new_name)
+
+        app.openapi_schema = json.loads(schema_str)
+        return app.openapi_schema
+
+    app.openapi = custom_openapi
