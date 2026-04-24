@@ -6,8 +6,8 @@ from app.config import ALLOWED_ORIGINS
 from app.api.routes import router as api_router
 
 tags_metadata =[
-    {"name": "Facial Analysis", "description": "Endpoints for facial palsy and eye symmetry detection."},
-    {"name": "Riskometer Prediction", "description": "Endpoints for stroke risk prediction using patient data."},
+    {"name": "Vision Analysis", "description": "Endpoints for facial palsy and eye symmetry detection."},
+    {"name": "Tabular Prediction", "description": "Endpoints for stroke risk prediction using patient data."},
     {"name": "Speech Analysis", "description": "Endpoints for detecting Dysarthria from voice recordings."}
 ]
 
