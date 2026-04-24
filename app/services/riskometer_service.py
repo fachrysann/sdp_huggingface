@@ -56,15 +56,29 @@ class StrokePredictorService:
         )
 
         # 5. Prediksi
-        prediction = self.model.predict(input_df)
+        prediction = self.model.predict(input_df)[0] # Hasil class (0 atau 1)
         prediction_proba = self.model.predict_proba(input_df)[:, 1] # Ambil peluang kelas 1 (Stroke)
         
         # Jadikan persentase (0.0 - 100.0)
         prob_value = float(prediction_proba[0])
         risk_percentage = round(prob_value * 100, 2)
 
+        severity_score = int(round(risk_percentage))
+
+        if severity_score > 60:
+            status_label = "Risiko Tinggi Stroke"
+        elif severity_score > 30:
+            status_label = "Risiko Sedang"
+        else:
+            status_label = "Risiko Rendah"
+
         # 7. Kembalikan Response yang Lebih Informatif
         return {
-            "risk_percentage": risk_percentage,
-            "raw_probability": prob_value
+            "severity_score": severity_score,
+            "status_label": status_label,
+            "metrics": {
+                "predicted_class": int(prediction),
+                "risk_percentage": risk_percentage,
+                # "raw_probability": round(prob_value, 4)
+            }
         }

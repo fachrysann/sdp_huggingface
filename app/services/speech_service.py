@@ -85,19 +85,40 @@ class AudioAnalyzerService:
             outputs = self.model(input_tensor)
             probabilities = F.softmax(outputs, dim=1)[0]
             
+            # --- LOGIKA STANDARDISASI ---
+            # Cari probabilitas khusus untuk kelas "Dysarthria"
+            dysarthria_idx = self.CLASSES.index("Dysarthria")
+            dysarthria_prob = float(probabilities[dysarthria_idx]) * 100
+            
+            # 1. SEVERITY SCORE (0 - 100). Semakin tinggi = Semakin parah (Dysarthria)
+            severity_score = int(round(dysarthria_prob))
+
+            # 2. ANOMALY & STATUS
+            # Dianggap anomali (bermasalah) jika probabilitas Dysarthria di atas 50%
+            # is_anomaly = severity_score > 50
+
+            if severity_score > 75:
+                status_label = "Indikasi Kuat Disartria"
+            elif severity_score > 50:
+                status_label = "Indikasi Ringan Disartria"
+            else:
+                status_label = "Suara Normal"
+
+            # Ambil prediksi akhir & persentase lengkap untuk direkam ke metrics
             predicted_idx = torch.argmax(probabilities).item()
-            confidence = probabilities[predicted_idx].item()
             predicted_class = self.CLASSES[predicted_idx]
+            confidence = probabilities[predicted_idx].item() * 100
             
             all_probs = {self.CLASSES[i]: round(float(probabilities[i]) * 100, 2) for i in range(len(self.CLASSES))}
 
-            # 3. Hapus logika split('-') karena nama kelas sudah binary.
-            # Kita bisa menambahkan status yang lebih ramah pengguna.
-            assessment_status = "Terindikasi Gejala Disartria" if predicted_class.lower() == "dysarthria" else "Suara Normal"
-
+            # 3. RETURN FORMAT KONSISTEN
             return {
-                "class": predicted_class,
-                "assessment": assessment_status,
-                "confidence_percentage": round(confidence * 100, 2),
-                "all_probabilities": all_probs
+                "severity_score": severity_score,
+                "status_label": status_label,
+                # "is_anomaly_detected": is_anomaly,
+                "metrics": {
+                    "predicted_class": predicted_class,
+                    "confidence_percentage": round(confidence, 2),
+                    "probabilities": all_probs
+                }
             }

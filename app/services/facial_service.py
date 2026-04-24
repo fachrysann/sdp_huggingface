@@ -102,11 +102,11 @@ class FaceAnalyzerService:
 
         # Severity Logic
         if final_pct > 45:
-            severity, desc, color = "High Severity Detected", "Significant asymmetry. Consult doctor.", (0, 0, 255)
+            severity, desc, color = "Asimetri Parah", "Deviasi signifikan", (0, 0, 255)
         elif final_pct > 15:
-            severity, desc, color = "Mild Asymmetry", "Slight deviation. Monitor.", (0, 165, 255)
+            severity, desc, color = "Asimetri Ringan", "Deviasi ringan", (0, 165, 255)
         else:
-            severity, desc, color = "Within Normal Limits", "No significant symptoms.", (0, 255, 0)
+            severity, desc, color = "Dalam Batas Normal", "Tidak ada gejala signifikan.", (0, 255, 0)
 
         # --- VISUALIZATION ---
         
@@ -143,11 +143,14 @@ class FaceAnalyzerService:
         cv2.putText(image, desc, (15, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
         return {
-            "percentage": final_pct,
-            "severity": severity,
-            "is_asymmetry_detected": final_pct > 35,
-            "mouth_diff": round(mouth_diff, 2),
-            "eye_asymmetry": round(eye_asym, 4)
+            "severity_score": final_pct,
+            "status_label": severity,
+            # "is_asymmetry_detected": final_pct > 35,
+            "metrics": {
+                "raw_severity_pct": final_pct, # Simpan nilai asli jika frontend tetap butuh
+                "mouth_diff_deg": round(mouth_diff, 2),
+                "eye_asymmetry_ratio": round(eye_asym, 4)
+            }
         }
     
     # ==========================================
@@ -229,22 +232,21 @@ class FaceAnalyzerService:
         THRESH_MILD   = 0.10   # sebelumnya 0.18 → asimetri ringan lebih cepat terdeteksi
 
         if gaze_diff <= THRESH_NORMAL:
-            score  = int(100 - (gaze_diff / THRESH_NORMAL) * 20)  # 80–100
-            status = "Simetris"
-            is_sym = True
-            color  = (0, 220, 80)
+            score  = int((gaze_diff / THRESH_NORMAL) * 20)  # Skor: 0 - 20%
+            status = "Normal / Simetris"
+            color  = (0, 255, 0) # Hijau
         elif gaze_diff <= THRESH_MILD:
             t      = (gaze_diff - THRESH_NORMAL) / (THRESH_MILD - THRESH_NORMAL)
-            score  = int(80 - t * 50)                              # 30–80
+            score  = int(20 + (t * 30))                     # Skor: 20 - 50%
             status = "Asimetri Ringan"
-            is_sym = False
-            color  = (0, 165, 255)
+            color  = (0, 165, 255) # Orange
         else:
             t      = min(1.0, (gaze_diff - THRESH_MILD) / 0.08)
-            score  = int(30 - t * 30)                              # 0–30
-            status = "Asimetri Signifikan"
-            is_sym = False
-            color  = (0, 0, 255)
+            score  = int(50 + (t * 50))                     # Skor: 50 - 100%
+            status = "Asimetri Parah"
+            color  = (0, 0, 255) # Merah
+
+        # is_anomaly = score > 35
 
         # ---- Deteksi arah lirikan ----
         CENTER = 0.5
@@ -282,13 +284,13 @@ class FaceAnalyzerService:
         cv2.rectangle(overlay, (0, 0), (dash_w, 170), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
 
-        cv2.putText(image, f"Score: {score}%  |  {status}",
+        cv2.putText(image, f"Severity: {score}%  |  {status}",
                     (15, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
         cv2.putText(image, f"Gaze L (med->lat): {gaze_L:.3f}",
                     (15, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         cv2.putText(image, f"Gaze R (med->lat): {gaze_R:.3f}",
                     (15, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.putText(image, f"Diff: {gaze_diff:.3f}  (threshold normal: <{THRESH_NORMAL})",
+        cv2.putText(image, f"Diff: {gaze_diff:.3f}",
                     (15, 132), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 160, 160), 1)
 
         # Progress bar sinkronisasi
@@ -296,14 +298,17 @@ class FaceAnalyzerService:
         cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w_px, bar_y + 12), (80, 80, 80), -1)
         fill = int(score / 100 * bar_w_px)
         cv2.rectangle(image, (bar_x, bar_y), (bar_x + fill, bar_y + 12), color, -1)
-        cv2.putText(image, "sync", (bar_x + bar_w_px + 8, bar_y + 10),
+        cv2.putText(image, "Severity Level", (bar_x + bar_w_px + 8, bar_y + 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 160), 1)
 
         return {
-            "symmetry_score":  score,
-            "is_symmetrical":  bool(is_sym),
-            "gaze_left":       round(gaze_L, 3),
-            "gaze_right":      round(gaze_R, 3),
-            "gaze_difference": round(gaze_diff, 3),
-            "status":          status,
+            "severity_score": score,
+            "status_label": status,
+            # "is_anomaly_detected": is_anomaly,
+            "metrics": {
+                "gaze_left": round(gaze_L, 3),
+                "gaze_right": round(gaze_R, 3),
+                "gaze_difference": round(gaze_diff, 3),
+                # "gaze_direction": gaze_dir
+            }
         }
