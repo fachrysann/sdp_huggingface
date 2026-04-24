@@ -269,5 +269,5 @@ Aplikasi ini sudah dipersiapkan sebagai konfigurasi *Production-Ready*, terutama
 ---
 
 <div align="center">
-<b>© 2026 Stroke Detect Pro API Team</b>
+<b>© 2026 Astanusa Inovasi Teknologi</b>
 </div>
