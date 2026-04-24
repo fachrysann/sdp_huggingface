@@ -93,7 +93,7 @@ class AudioAnalyzerService:
 
             # 3. Hapus logika split('-') karena nama kelas sudah binary.
             # Kita bisa menambahkan status yang lebih ramah pengguna.
-            assessment_status = "Terindikasi Gejala Disartria" if predicted_class.lower() == "dysarthria" else "Suara Normal (Kontrol)"
+            assessment_status = "Terindikasi Gejala Disartria" if predicted_class.lower() == "dysarthria" else "Suara Normal"
 
             return {
                 "class": predicted_class,

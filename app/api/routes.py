@@ -5,9 +5,9 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from app.schemas import StrokePredictorInput
 
 from app.config import get_api_key, MAX_FILE_SIZE, ALLOWED_MIME_TYPES, ALLOWED_AUDIO_MIME_TYPES
-from app.services.vision_service import FaceAnalyzerService
-from app.services.tabular_service import StrokePredictorService
-from app.services.audio_service import AudioAnalyzerService
+from app.services.facial_service import FaceAnalyzerService
+from app.services.riskometer_service import StrokePredictorService
+from app.services.speech_service import AudioAnalyzerService
 
 router = APIRouter()
 analyzer_instance = FaceAnalyzerService()

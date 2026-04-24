@@ -145,7 +145,7 @@ class FaceAnalyzerService:
         return {
             "percentage": final_pct,
             "severity": severity,
-            "is_stroke_detected": final_pct > 35,
+            "is_asymmetry_detected": final_pct > 35,
             "mouth_diff": round(mouth_diff, 2),
             "eye_asymmetry": round(eye_asym, 4)
         }
