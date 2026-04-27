@@ -3,6 +3,7 @@ import numpy as np
 import uuid
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from app.schemas import StrokePredictorInput
+from datetime import datetime
 
 from app.config import (
     get_api_key, MAX_FILE_SIZE, ALLOWED_MIME_TYPES, ALLOWED_AUDIO_MIME_TYPES,
@@ -57,7 +58,7 @@ async def process_uploaded_audio(file: UploadFile):
     return contents
 
 # ==================================================
-# NEW FUNCTION: UPLOAD TO SUPABASE
+# UPLOAD TO SUPABASE
 # ==================================================
 def upload_image_to_supabase(img_array, folder_name: str, max_width=1080, jpeg_quality=95):
     """
@@ -96,6 +97,33 @@ def upload_image_to_supabase(img_array, folder_name: str, max_width=1080, jpeg_q
         raise HTTPException(status_code=500, detail="Gagal mengunggah gambar ke Storage.")
 
 # ==================================================
+# LOGGING MLOPS TO SUPABASE
+# ==================================================
+def log_prediction_to_supabase(endpoint_name: str, input_data: dict, prediction_result: dict, media_url: str = None):
+    """
+    Menyimpan log prediksi ke Supabase untuk keperluan MLOps (Data Tracking)
+    """
+    try:
+        log_data = {
+            "endpoint": endpoint_name,
+            "input_data": input_data,
+            "media_url": media_url,
+            "severity_score": prediction_result.get("severity_score"),
+            "status_label": prediction_result.get("status_label"),
+            "metrics": prediction_result.get("metrics"),
+            "human_feedback": None # Disiapkan untuk Tahap Feedback Loop
+        }
+        
+        # Insert ke tabel yang baru kita buat
+        supabase.table("prediction_logs").insert(log_data).execute()
+        print(f"MLOps Log saved for {endpoint_name}")
+        
+    except Exception as e:
+        # Kita hanya print errornya, jangan di-raise HTTPException
+        # agar user tetap mendapatkan hasil prediksi walaupun sistem log gagal
+        print(f"MLOps Logging Error: {str(e)}")
+
+# ==================================================
 # ENDPOINT 1: FACIAL PALSY (Deteksi Senyum/Mulut)
 # ==================================================
 @router.post(
@@ -128,6 +156,13 @@ async def analyze_facial_palsy(
         # img_base64 = base64.b64encode(buffer).decode('utf-8')
 
         img_url = upload_image_to_supabase(processed_img, folder_name="facial_palsy")
+
+        log_prediction_to_supabase(
+            endpoint_name="facial_palsy",
+            input_data={"filename": file.filename},
+            prediction_result=results,
+            media_url=img_url
+        )
 
         return {
             "status": "success",
@@ -177,6 +212,13 @@ async def analyze_eye_symmetry(
         # img_base64 = base64.b64encode(buffer).decode('utf-8')
         img_url = upload_image_to_supabase(processed_img, folder_name="eye_symmetry")
 
+        log_prediction_to_supabase(
+            endpoint_name="eye_symmetry",
+            input_data={"filename": file.filename},
+            prediction_result=results,
+            media_url=img_url
+        )
+
         return {
             "status": "success",
             "analysis": results,
@@ -212,6 +254,13 @@ async def predict_stroke(
     try:
         # Panggil service prediksi
         result = predictor.predict_stroke(data.model_dump())
+
+        log_prediction_to_supabase(
+            endpoint_name="riskometer",
+            input_data=data.model_dump(), # Simpan data gender, bmi, glukosa, dll
+            prediction_result=result,
+            media_url=None # Tabular tidak ada gambar
+        )
         
         return {
             "status": "success",
@@ -250,6 +299,13 @@ async def analyze_speech(
     try:
         # Jalankan prediksi
         result = audio_analyzer.predict_audio(contents)
+
+        log_prediction_to_supabase(
+            endpoint_name="speech_dysarthria",
+            input_data={"filename": file.filename},
+            prediction_result=result,
+            media_url=None # Nanti bisa diupdate jika audio di-upload ke Supabase bucket
+        )
         
         return {
             "status": "success",
