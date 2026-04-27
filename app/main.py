@@ -38,7 +38,7 @@ app.include_router(api_router, prefix="/api/v1")
 @app.get("/")
 async def root():
     return {
-        "message": "Welcome to Stroke Assessment API. System is running!",
+        "message": "Welcome to Stroke Detect Pro API. System is running!",
         "version": "v1.0.0",
-        "docs_url": "/docs" # Memberi tahu front-end di mana letak dokumentasinya
+        "docs_url": "/docs" 
     }
