@@ -47,3 +47,4 @@ soundfile==0.12.1
 gunicorn==22.0.0
 torch
 torchaudio
+supabase

@@ -1,10 +1,14 @@
 import cv2
 import numpy as np
-import base64
+import uuid
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from app.schemas import StrokePredictorInput
 
-from app.config import get_api_key, MAX_FILE_SIZE, ALLOWED_MIME_TYPES, ALLOWED_AUDIO_MIME_TYPES
+from app.config import (
+    get_api_key, MAX_FILE_SIZE, ALLOWED_MIME_TYPES, ALLOWED_AUDIO_MIME_TYPES,
+    supabase, SUPABASE_BUCKET_NAME
+)
+
 from app.services.facial_service import FaceAnalyzerService
 from app.services.riskometer_service import StrokePredictorService
 from app.services.speech_service import AudioAnalyzerService
@@ -52,26 +56,44 @@ async def process_uploaded_audio(file: UploadFile):
         raise HTTPException(status_code=413, detail="Payload too large. File exceeds maximum allowed size.")
     return contents
 
-# --- HELPER FUNCTION: Kompresi Base64 Khusus Mobile ---
-def encode_image_for_mobile(img_array, max_width=720, jpeg_quality=75):
+# ==================================================
+# NEW FUNCTION: UPLOAD TO SUPABASE
+# ==================================================
+def upload_image_to_supabase(img_array, max_width=720, jpeg_quality=75):
     """
-    Me-resize gambar jika terlalu besar dan mengompresnya ke JPEG
-    agar teks Base64 tidak membebani aplikasi mobile.
+    Me-resize gambar, kompres ke JPEG, lalu upload ke Supabase Storage.
+    Mengembalikan Public URL.
     """
     h, w = img_array.shape[:2]
     
-    # 1. Resize jika lebar gambar melebihi batas maksimal (misal 720px)
+    # 1. Resize
     if w > max_width:
         ratio = max_width / float(w)
         new_h = int(h * ratio)
         img_array = cv2.resize(img_array, (max_width, new_h), interpolation=cv2.INTER_AREA)
     
-    # 2. Kompres ke JPEG (mengurangi ukuran file tanpa merusak visualisasi garis/titik)
-    encode_param =[int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
+    # 2. Encode to JPEG bytes
+    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
     _, buffer = cv2.imencode('.jpg', img_array, encode_param)
+    image_bytes = buffer.tobytes()
     
-    # 3. Ubah ke teks Base64
-    return base64.b64encode(buffer).decode('utf-8')
+    # 3. Generate Unique Filename
+    filename = f"analysis_results/{uuid.uuid4().hex}.jpg"
+    
+    try:
+        # 4. Upload to Supabase Bucket
+        supabase.storage.from_(SUPABASE_BUCKET_NAME).upload(
+            path=filename,
+            file=image_bytes,
+            file_options={"content-type": "image/jpeg"}
+        )
+        
+        # 5. Get Public URL
+        public_url = supabase.storage.from_(SUPABASE_BUCKET_NAME).get_public_url(filename)
+        return public_url
+    except Exception as e:
+        print(f"Supabase Upload Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Gagal mengunggah gambar ke Storage.")
 
 # ==================================================
 # ENDPOINT 1: FACIAL PALSY (Deteksi Senyum/Mulut)
@@ -105,13 +127,15 @@ async def analyze_facial_palsy(
         # _, buffer = cv2.imencode('.jpg', processed_img)
         # img_base64 = base64.b64encode(buffer).decode('utf-8')
 
-        img_base64 = encode_image_for_mobile(processed_img)
+        img_url = upload_image_to_supabase(processed_img)
 
         return {
             "status": "success",
             "analysis": results,
-            "image_result": f"data:image/jpeg;base64,{img_base64}"
+            "image_url": img_url 
         }
+    except HTTPException:
+        raise    
     except Exception as e:
         print(f"Server Error: {str(e)}")
         raise HTTPException(status_code=500, detail="An error occurred during processing.")
@@ -151,14 +175,15 @@ async def analyze_eye_symmetry(
         # 3. Encode hasil ke Base64
         # _, buffer = cv2.imencode('.jpg', processed_img)
         # img_base64 = base64.b64encode(buffer).decode('utf-8')
-        img_base64 = encode_image_for_mobile(processed_img)
+        img_url = upload_image_to_supabase(processed_img)
 
-        # 4. Kembalikan Response
         return {
             "status": "success",
             "analysis": results,
-            "image_result": f"data:image/jpeg;base64,{img_base64}"
+            "image_url": img_url  # Changed from image_result to image_url
         }
+    except HTTPException:
+        raise    
     except Exception as e:
         print(f"Server Error: {str(e)}")
         raise HTTPException(status_code=500, detail="An error occurred during processing.")
