@@ -59,7 +59,7 @@ async def process_uploaded_audio(file: UploadFile):
 # ==================================================
 # NEW FUNCTION: UPLOAD TO SUPABASE
 # ==================================================
-def upload_image_to_supabase(img_array, max_width=720, jpeg_quality=75):
+def upload_image_to_supabase(img_array, folder_name: str, max_width=1080, jpeg_quality=95):
     """
     Me-resize gambar, kompres ke JPEG, lalu upload ke Supabase Storage.
     Mengembalikan Public URL.
@@ -78,7 +78,7 @@ def upload_image_to_supabase(img_array, max_width=720, jpeg_quality=75):
     image_bytes = buffer.tobytes()
     
     # 3. Generate Unique Filename
-    filename = f"analysis_results/{uuid.uuid4().hex}.jpg"
+    filename = f"{folder_name}/{uuid.uuid4().hex}.jpg"
     
     try:
         # 4. Upload to Supabase Bucket
@@ -127,7 +127,7 @@ async def analyze_facial_palsy(
         # _, buffer = cv2.imencode('.jpg', processed_img)
         # img_base64 = base64.b64encode(buffer).decode('utf-8')
 
-        img_url = upload_image_to_supabase(processed_img)
+        img_url = upload_image_to_supabase(processed_img, folder_name="facial_palsy")
 
         return {
             "status": "success",
@@ -175,7 +175,7 @@ async def analyze_eye_symmetry(
         # 3. Encode hasil ke Base64
         # _, buffer = cv2.imencode('.jpg', processed_img)
         # img_base64 = base64.b64encode(buffer).decode('utf-8')
-        img_url = upload_image_to_supabase(processed_img)
+        img_url = upload_image_to_supabase(processed_img, folder_name="eye_symmetry")
 
         return {
             "status": "success",
