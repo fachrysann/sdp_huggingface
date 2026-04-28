@@ -5,6 +5,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from app.schemas import StrokePredictorInput
 from datetime import datetime
 import tempfile # Tambahkan di atas
+import os
 
 from app.config import (
     get_api_key, MAX_FILE_SIZE, ALLOWED_MIME_TYPES, ALLOWED_AUDIO_MIME_TYPES, ALLOWED_VIDEO_MIME_TYPES,
