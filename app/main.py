@@ -8,6 +8,7 @@ from app.schemas import configure_openapi_schemas
 
 tags_metadata =[
     {"name": "Facial Symmetry Analysis", "description": "Endpoints for facial palsy and eye symmetry detection."},
+    {"name": "Arm Weakness Analysis", "description": "Endpoints for detecting motor weakness from videos."},
     {"name": "Riskometer Prediction", "description": "Endpoints for stroke risk prediction using patient data."},
     {"name": "Speech Dysarthria Analysis", "description": "Endpoints for detecting Dysarthria from voice recordings."}
 ]

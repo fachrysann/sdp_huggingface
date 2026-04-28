@@ -4,20 +4,23 @@ import uuid
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from app.schemas import StrokePredictorInput
 from datetime import datetime
+import tempfile # Tambahkan di atas
 
 from app.config import (
-    get_api_key, MAX_FILE_SIZE, ALLOWED_MIME_TYPES, ALLOWED_AUDIO_MIME_TYPES,
+    get_api_key, MAX_FILE_SIZE, ALLOWED_MIME_TYPES, ALLOWED_AUDIO_MIME_TYPES, ALLOWED_VIDEO_MIME_TYPES,
     supabase, SUPABASE_BUCKET_NAME
 )
 
 from app.services.facial_service import FaceAnalyzerService
 from app.services.riskometer_service import StrokePredictorService
 from app.services.speech_service import AudioAnalyzerService
+from app.services.arm_service import ArmAnalyzerService 
 
 router = APIRouter()
 analyzer_instance = FaceAnalyzerService()
 predictor_instance = StrokePredictorService()
 audio_instance = AudioAnalyzerService()
+arm_instance = ArmAnalyzerService() 
 
 def get_analyzer():
     return analyzer_instance
@@ -27,6 +30,9 @@ def get_predictor():
 
 def get_audio_analyzer():
     return audio_instance
+
+def get_arm_analyzer():
+    return arm_instance
 
 # --- HELPER FUNCTION: Untuk mengolah gambar yang diupload ---
 async def process_uploaded_image(file: UploadFile):
@@ -95,6 +101,24 @@ def upload_image_to_supabase(img_array, folder_name: str, max_width=1080, jpeg_q
     except Exception as e:
         print(f"Supabase Upload Error: {str(e)}")
         raise HTTPException(status_code=500, detail="Gagal mengunggah gambar ke Storage.")
+    
+def upload_video_to_supabase(video_path: str, folder_name: str):
+    """
+    Mengupload video (mp4) ke Supabase Storage dan mengembalikan Public URL.
+    """
+    filename = f"{folder_name}/{uuid.uuid4().hex}.mp4"
+    try:
+        with open(video_path, "rb") as f:
+            supabase.storage.from_(SUPABASE_BUCKET_NAME).upload(
+                path=filename,
+                file=f,
+                file_options={"content-type": "video/mp4"}
+            )
+        public_url = supabase.storage.from_(SUPABASE_BUCKET_NAME).get_public_url(filename)
+        return public_url
+    except Exception as e:
+        print(f"Supabase Video Upload Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Gagal mengunggah video ke Storage.")
 
 # ==================================================
 # LOGGING MLOPS TO SUPABASE
@@ -315,3 +339,65 @@ async def analyze_speech(
     except Exception as e:
         print(f"Server Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Terjadi kesalahan saat memproses audio: {str(e)}")
+    
+# ==================================================
+# ENDPOINT 5: ARM WEAKNESS (Deteksi Kelemahan Lengan)
+# ==================================================
+@router.post(
+    "/analyze/arm-weakness",
+    tags=["Arm Weakness Analysis"],
+    summary="Analyze Arm Weakness from Video",
+    description="Uploads a video evaluating the patient's arm strength by holding both arms raised. Returns severity score and a processed mp4 video URL.",
+)
+async def analyze_arm_weakness(
+    file: UploadFile = File(..., description="Video file (.mp4) of the patient holding both arms up."),
+    api_key: str = Depends(get_api_key),
+    analyzer: ArmAnalyzerService = Depends(get_arm_analyzer)
+):
+    # 1. Validasi File
+    if file.content_type not in ALLOWED_VIDEO_MIME_TYPES and not file.filename.lower().endswith(('.mp4', '.avi', '.mov')):
+        raise HTTPException(status_code=415, detail="Unsupported media type. Only MP4/AVI/MOV are allowed.")
+
+    contents = await file.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="Payload too large. File exceeds maximum allowed size.")
+
+    # 2. Buat Temporary File untuk Input dan Output (cv2 membutuhkan path file asli)
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_in:
+            temp_in.write(contents)
+            input_path = temp_in.name
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_out:
+            output_path = temp_out.name
+
+        # 3. Proses Analisis Video
+        results = analyzer.analyze_arm_weakness(input_path, output_path)
+
+        # 4. Upload Hasil Video ke Supabase
+        video_url = upload_video_to_supabase(output_path, folder_name="arm_weakness")
+
+        # 5. Bersihkan Temp File
+        os.remove(input_path)
+        os.remove(output_path)
+
+        # 6. Logging ke MLOps
+        log_prediction_to_supabase(
+            endpoint_name="arm_weakness",
+            input_data={"filename": file.filename},
+            prediction_result=results,
+            media_url=video_url
+        )
+
+        return {
+            "status": "success",
+            "analysis": results,
+            "video_url": video_url 
+        }
+
+    except Exception as e:
+        print(f"Server Error (Arm Weakness): {str(e)}")
+        # Pastikan file temporary dihapus walaupun terjadi error
+        if 'input_path' in locals() and os.path.exists(input_path): os.remove(input_path)
+        if 'output_path' in locals() and os.path.exists(output_path): os.remove(output_path)
+        raise HTTPException(status_code=500, detail=f"Terjadi kesalahan: {str(e)}")
