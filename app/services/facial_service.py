@@ -47,112 +47,374 @@ class FaceAnalyzerService:
     # ==========================================
     # ENDPOINT 1: FACIAL PALSY 
     # ==========================================
+    @staticmethod
+    def _get_yaw_pitch(lm):
+        """
+        Estimate head yaw and pitch from stable landmark pairs.
+        Returns (yaw_rad, pitch_rad) in image-space.
+
+        Yaw  : rotation around vertical axis   (left/right turn)
+        Pitch: rotation around horizontal axis  (nod up/down)
+
+        We use the eye-to-eye axis for yaw and the nose-tip vs
+        midpoint-between-eyes for pitch.  Both are cheap and
+        stable without a full 3-D solver.
+        """
+        # Yaw from horizontal angle of inter-ocular axis
+        # lm[33] = right eye medial corner, lm[263] = left eye medial corner
+        dx = lm[263].x - lm[33].x
+        dy = lm[263].y - lm[33].y
+        yaw = math.atan2(dy, dx)          # 0 when perfectly level
+
+        # Pitch from ratio of nose-tip Y vs eye midpoint Y
+        eye_mid_y = (lm[33].y + lm[263].y) / 2
+        nose_y    = lm[1].y
+        face_h    = abs(lm[152].y - lm[10].y) + 1e-9   # chin to top-of-head
+        pitch = (nose_y - eye_mid_y) / face_h            # ~0.18 at neutral
+
+        return yaw, pitch
+
+    @staticmethod
+    def _rotate_pt(x, y, cx, cy, angle):
+        """Rotate (x,y) around (cx,cy) by -angle to cancel head roll."""
+        cos_a, sin_a = math.cos(-angle), math.sin(-angle)
+        nx = cos_a * (x - cx) - sin_a * (y - cy) + cx
+        ny = sin_a * (x - cx) + cos_a * (y - cy) + cy
+        return nx, ny
+
+    def _normalised_landmarks(self, lm, w, h):
+        """
+        Return pixel coordinates corrected for head ROLL only.
+        Yaw/pitch corrections require a 3-D model; roll is the
+        main source of false asymmetry and is easy to undo in 2-D.
+        """
+        # Roll angle = tilt of inter-ocular axis from horizontal
+        dx = lm[263].x * w - lm[33].x * w
+        dy = lm[263].y * h - lm[33].y * h
+        roll = math.atan2(dy, dx)
+
+        cx = (lm[33].x + lm[263].x) / 2 * w
+        cy = (lm[33].y + lm[263].y) / 2 * h
+
+        def px(i):
+            rx, ry = self._rotate_pt(lm[i].x * w, lm[i].y * h, cx, cy, roll)
+            return rx, ry
+
+        return px, roll
+
+    @staticmethod
+    def _face_scale(lm):
+        """Inter-ocular distance (normalised coords). Robust, view-stable."""
+        dx = lm[33].x - lm[263].x
+        dy = lm[33].y - lm[263].y
+        return math.sqrt(dx * dx + dy * dy) + 1e-9
+
+    # ──────────────────────────────────────────────────────────
+    # FIVE FEATURE SIGNALS  (all return non-negative floats;
+    # larger = more asymmetric)
+    # ──────────────────────────────────────────────────────────
+
+    def _signal_mouth_corner(self, px, lm):
+        """
+        Vertical displacement of mouth corners relative to the
+        midline (mean Y of the two corners).
+        Normalised by mouth width → scale-invariant.
+
+        Landmarks:
+          61  = right mouth corner
+          291 = left  mouth corner
+          13  = upper lip centre (midpoint reference)
+          14  = lower lip centre
+        """
+        r_x, r_y = px(61)
+        l_x, l_y = px(291)
+
+        mouth_width  = abs(l_x - r_x) + 1e-9
+        corner_delta = abs(r_y - l_y) / mouth_width   # ratio; ~0 when symmetric
+        return corner_delta
+
+    def _signal_lip_curl(self, px, lm):
+        """
+        Asymmetry of upper-lip curvature.
+        We approximate curl as the Y offset of the lip peak
+        (37 right-side cupid's bow, 267 left-side) relative to
+        the lip centre (13).
+
+        Normalised by inter-corner width.
+        """
+        _, centre_y = px(13)
+        _, r_peak_y = px(37)
+        _, l_peak_y = px(267)
+
+        r_x, _ = px(61)
+        l_x, _ = px(291)
+        width = abs(l_x - r_x) + 1e-9
+
+        r_curl = (centre_y - r_peak_y) / width
+        l_curl = (centre_y - l_peak_y) / width
+        return abs(r_curl - l_curl)
+
+    def _signal_eye_openness(self, px, lm):
+        """
+        Vertical aperture of each eye, normalised by eye width
+        (not by inter-ocular distance, which adds yaw sensitivity).
+
+        Right eye: 159 upper lid, 145 lower lid, 133/33 lateral/medial corners
+        Left  eye: 386 upper lid, 374 lower lid, 362/263 lateral/medial corners
+        """
+        def aperture(top_i, bot_i, lat_i, med_i):
+            _, t_y = px(top_i)
+            _, b_y = px(bot_i)
+            l_x, _ = px(lat_i)
+            m_x, _ = px(med_i)
+            eye_w  = abs(l_x - m_x) + 1e-9
+            return (b_y - t_y) / eye_w    # positive when eye is open
+
+        r_ap = aperture(159, 145, 133, 33)
+        l_ap = aperture(386, 374, 362, 263)
+        return abs(r_ap - l_ap)
+
+    def _signal_nasolabial(self, px, lm):
+        """
+        Depth of the nasolabial fold, approximated as the angle
+        at the alar base between the nose wing and the mouth corner.
+
+        Right: 102 (alar), 61 (corner), 49 (cheek reference)
+        Left : 331 (alar), 291 (corner), 279 (cheek reference)
+
+        A flattened fold (common in palsy) produces a larger angle.
+        """
+        def fold_angle(alar_i, corner_i, cheek_i):
+            ax, ay = px(alar_i)
+            cx, cy = px(corner_i)
+            hx, hy = px(cheek_i)
+            v1 = np.array([ax - cx, ay - cy])
+            v2 = np.array([hx - cx, hy - cy])
+            n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
+            if n1 < 1e-6 or n2 < 1e-6:
+                return 0.0
+            return math.degrees(math.acos(np.clip(np.dot(v1, v2) / (n1 * n2), -1, 1)))
+
+        r_fold = fold_angle(102, 61, 49)
+        l_fold = fold_angle(331, 291, 279)
+        return abs(r_fold - l_fold) / 90.0    # normalise to ~[0,1]
+
+    def _signal_eyebrow_height(self, px, lm):
+        """
+        Mean eyebrow height above the upper eyelid, normalised
+        by eye-width.  Uses the brow arch peak on each side.
+
+        Right brow peak: 105   Right upper lid centre: 159
+        Left  brow peak: 334   Left  upper lid centre: 386
+        """
+        def brow_gap(brow_i, lid_i, lat_i, med_i):
+            _, br_y = px(brow_i)
+            _, li_y = px(lid_i)
+            l_x, _  = px(lat_i)
+            m_x, _  = px(med_i)
+            eye_w   = abs(l_x - m_x) + 1e-9
+            return (li_y - br_y) / eye_w   # positive; larger = brow higher
+
+        r_gap = brow_gap(105, 159, 133, 33)
+        l_gap = brow_gap(334, 386, 362, 263)
+        return abs(r_gap - l_gap)
+
+    # ──────────────────────────────────────────────────────────
+    # SCORING
+    # ──────────────────────────────────────────────────────────
+
+    # Empirical thresholds (value at which signal ≈ "clearly abnormal")
+    # Tune these on your validation set if you have labelled data.
+    _SIGNAL_SCALES = {
+        'mouth_corner':  0.12,   # ratio; ~0.04 natural variation
+        'lip_curl':      0.08,
+        'eye_openness':  0.20,   # ratio per eye-width
+        'nasolabial':    0.25,   # normalised angle
+        'eyebrow_height':0.18,
+    }
+
+    # Weights sum to 1.0.  Mouth corner + eye are the two most
+    # clinically reliable signs; others provide corroborating evidence.
+    _WEIGHTS = {
+        'mouth_corner':   0.35,
+        'eye_openness':   0.30,
+        'lip_curl':       0.15,
+        'eyebrow_height': 0.10,
+        'nasolabial':     0.10,
+    }
+
+    @staticmethod
+    def _sigmoid_score(raw, k=8.0):
+        """
+        Map raw weighted signal (0 = perfect symmetry, 1 = threshold)
+        to a 0–100 score via sigmoid, centred at 0.5.
+        k controls steepness: higher k = sharper transition.
+        """
+        # Sigmoid: 0→~2, 0.5→50, 1→~98, values beyond 1 approach 100
+        return round(100 / (1 + math.exp(-k * (raw - 0.5))))
+
+    def _compute_score(self, signals: dict):
+        """
+        Normalise each signal by its scale threshold, apply weights,
+        squeeze through sigmoid.  Also returns per-signal contributions
+        and a confidence flag.
+        """
+        weighted_sum = 0.0
+        contributions = {}
+        for name, value in signals.items():
+            normalised = value / self._SIGNAL_SCALES[name]
+            w = self._WEIGHTS[name]
+            contributions[name] = round(normalised, 4)
+            weighted_sum += w * normalised
+
+        final_score = self._sigmoid_score(weighted_sum)
+
+        # Confidence: low if the two dominant signals strongly disagree.
+        # (e.g. clear mouth asymmetry but symmetric eyes → could be natural)
+        dominant = [
+            signals['mouth_corner'] / self._SIGNAL_SCALES['mouth_corner'],
+            signals['eye_openness'] / self._SIGNAL_SCALES['eye_openness'],
+        ]
+        low_confidence = abs(dominant[0] - dominant[1]) > 1.2
+
+        return final_score, contributions, low_confidence
+
+    # ──────────────────────────────────────────────────────────
+    # PUBLIC ENDPOINT
+    # ──────────────────────────────────────────────────────────
+
     def analyze_facial_palsy(self, image: np.ndarray):
-        """Method Public yang akan dipanggil oleh API (main.py/routes.py)"""
-        # Convert ke MediaPipe Image
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
-        
-        # Deteksi Wajah
         detection_result = self.landmarker.detect(mp_image)
 
         if not detection_result.face_landmarks:
-            return None, None # Kembalikan None jika tidak ada wajah
+            return None, None
 
-        # Jalankan logika perhitungan & gambar
         landmarks = detection_result.face_landmarks[0]
+
+        # Reject extreme yaw/pitch early — measurements are unreliable
+        yaw, pitch = self._get_yaw_pitch(landmarks)
+        if abs(yaw) > math.radians(25) or abs(pitch - 0.18) > 0.12:
+            return {"error": "head_pose_too_extreme", "yaw_deg": round(math.degrees(yaw), 1)}, image
+
         results = self._calculate_and_draw(landmarks, image)
-        
         return results, image
+
+    # ──────────────────────────────────────────────────────────
+    # CALCULATION + VISUALISATION
+    # ──────────────────────────────────────────────────────────
 
     def _calculate_and_draw(self, landmarks, image):
         h, w, _ = image.shape
-        
-        def get_pt(i):
-            return int(landmarks[i].x * w), int(landmarks[i].y * h)
+        lm = landmarks
 
-        # 1. MATHEMATICAL LOGIC
-        # Points: B=6, T=1, R=61, L=291
-        B, T, R, L = get_pt(6), get_pt(1), get_pt(61), get_pt(291)
+        # Roll-corrected pixel accessor
+        px, roll_rad = self._normalised_landmarks(lm, w, h)
 
-        # Face Scale
-        p33, p263 = landmarks[33], landmarks[263]
-        face_scale = math.sqrt((p33.x - p263.x)**2 + (p33.y - p263.y)**2)
+        # ── Compute the five signals ──────────────────────────
+        signals = {
+            'mouth_corner':   self._signal_mouth_corner(px, lm),
+            'lip_curl':       self._signal_lip_curl(px, lm),
+            'eye_openness':   self._signal_eye_openness(px, lm),
+            'nasolabial':     self._signal_nasolabial(px, lm),
+            'eyebrow_height': self._signal_eyebrow_height(px, lm),
+        }
 
-        def calc_angle(p_target, p_vertex, p_base):
-            v1 = np.array([p_target[0] - p_vertex[0], p_target[1] - p_vertex[1]])
-            v2 = np.array([p_base[0] - p_vertex[0], p_base[1] - p_vertex[1]])
-            dot = np.dot(v1, v2)
-            mag1, mag2 = np.linalg.norm(v1), np.linalg.norm(v2)
-            if mag1 == 0 or mag2 == 0: return 0
-            return math.degrees(math.acos(np.clip(dot / (mag1 * mag2), -1.0, 1.0)))
+        final_score, contributions, low_confidence = self._compute_score(signals)
 
-        # Perhitungan Asimetri
-        angle_right = calc_angle(B, R, T)
-        angle_left = calc_angle(B, L, T)
-        mouth_diff = abs(angle_right - angle_left)
-
-        left_eye_open = landmarks[159].y - landmarks[145].y
-        right_eye_open = landmarks[386].y - landmarks[374].y
-        eye_asym = abs(left_eye_open - right_eye_open) / face_scale * 10
-
-        # Scoring
-        m_pct = (mouth_diff / 10.0) * 100 if mouth_diff > 2.5 else 0
-        e_pct = (eye_asym / 0.5) * 100 if eye_asym > 0.08 else 0
-        final_pct = round(min(100, max(m_pct, e_pct)))
-
-        # Severity Logic
-        if final_pct > 45:
-            severity, desc, color = "Asimetri Parah", "Deviasi signifikan", (0, 0, 255)
-        elif final_pct > 15:
-            severity, desc, color = "Asimetri Ringan", "Deviasi ringan", (0, 165, 255)
+        # ── Severity classification ───────────────────────────
+        if final_score > 50:
+            severity = "Asimetri Parah"
+            desc     = "Deviasi signifikan"
+            color    = (0, 0, 255)
+        elif final_score > 20:
+            severity = "Asimetri Ringan"
+            desc     = "Deviasi ringan"
+            color    = (0, 165, 255)
         else:
-            severity, desc, color = "Dalam Batas Normal", "Tidak ada gejala signifikan.", (0, 255, 0)
+            severity = "Dalam Batas Normal"
+            desc     = "Tidak ada gejala signifikan."
+            color    = (0, 255, 0)
 
-        # --- VISUALIZATION ---
-        
-        # A. Garis Mulut (Merah)
-        cv2.polylines(image, [np.array([B, R, T])], False, (0, 0, 255), 2)
-        cv2.polylines(image, [np.array([B, L, T])], False, (0, 0, 255), 2)
+        if low_confidence:
+            desc += " (confidence rendah)"
 
-        # B. Gambar Mata (Sian & Magenta)
-        def draw_eye(indices):
-            pts = np.array([get_pt(i) for i in indices], np.int32)
-            cv2.polylines(image, [pts], False, (255, 255, 0), 2) # Cyan
-            for p in pts:
-                cv2.circle(image, p, 3, (255, 0, 255), -1) # Magenta
+        # ── Visualisation ─────────────────────────────────────
+        def draw_pt(i, c=(0, 255, 255), r=5):
+            x_, y_ = px(i)
+            cv2.circle(image, (int(x_), int(y_)), r, c, -1)
+            cv2.circle(image, (int(x_), int(y_)), r, (0, 0, 0), 1)
 
-        draw_eye([130, 161, 160, 159, 158, 157, 133]) # Kiri
-        draw_eye([362, 384, 385, 386, 387, 388, 263]) # Kanan
+        def draw_line(i, j, c=(0, 0, 255), t=2):
+            x1, y1 = px(i); x2, y2 = px(j)
+            cv2.line(image, (int(x1), int(y1)), (int(x2), int(y2)), c, t)
 
-        # C. Label B, T, R, L
-        for pt, label in [(B, "B"), (T, "T"), (R, "R"), (L, "L")]:
-            cv2.circle(image, pt, 6, (0, 255, 255), -1) # Kuning
-            cv2.circle(image, pt, 6, (0, 0, 0), 2)       # Border hitam
-            cv2.putText(image, label, (pt[0]+10, pt[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        # Mouth corners + centre
+        for idx in [61, 291, 13, 14]:
+            draw_pt(idx)
+        draw_line(61, 291, (0, 0, 200))
 
-        # D. Dashboard
+        # Eye landmarks
+        for eye_ids in (
+            [33, 159, 158, 157, 133, 145, 144, 163],   # right
+            [263, 386, 385, 384, 362, 374, 373, 390],   # left
+        ):
+            for a, b in zip(eye_ids, eye_ids[1:]):
+                draw_line(a, b, (255, 220, 0), 2)
+            for idx in eye_ids:
+                draw_pt(idx, (255, 0, 255), 3)
+
+        # Eyebrow peaks
+        for idx in [105, 334]:
+            draw_pt(idx, (0, 200, 255), 4)
+
+        # Nasolabial reference points
+        for idx in [102, 331, 49, 279]:
+            draw_pt(idx, (200, 100, 255), 3)
+
+        # ── Dashboard overlay ─────────────────────────────────
+        dash_h = 180
         overlay = image.copy()
-        cv2.rectangle(overlay, (0, 0), (400, 160), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
+        cv2.rectangle(overlay, (0, 0), (420, dash_h), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.65, image, 0.35, 0, image)
 
-        # E. Teks Dashboard
-        cv2.putText(image, f"Score: {final_pct}%", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        cv2.putText(image, severity, (15, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-        cv2.putText(image, f"Mouth Diff: {mouth_diff:.1f} deg", (15, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.putText(image, f"Eye Asym : {eye_asym:.3f}", (15, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.putText(image, desc, (15, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        cv2.putText(image, f"Score: {final_score}%", (15, 32),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.85, color, 2)
+        cv2.putText(image, severity, (15, 62),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.60, color, 2)
+        cv2.putText(image, desc, (15, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (220, 220, 220), 1)
+
+        y_offset = 105
+        for name, norm_val in contributions.items():
+            bar_len = int(min(norm_val, 2.0) / 2.0 * 180)
+            bar_color = (0, 200, 0) if norm_val < 0.7 else \
+                        (0, 165, 255) if norm_val < 1.2 else (0, 0, 220)
+            cv2.rectangle(image, (110, y_offset - 8), (110 + bar_len, y_offset + 2), bar_color, -1)
+            label = name.replace('_', ' ')[:14]
+            cv2.putText(image, f"{label}: {norm_val:.2f}",
+                        (15, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.37, (180, 180, 180), 1)
+            y_offset += 16
+
+        # Roll correction note
+        cv2.putText(image, f"Roll corr: {math.degrees(roll_rad):.1f}deg",
+                    (15, 172), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (120, 120, 120), 1)
 
         return {
-            "severity_score": final_pct,
-            "status_label": severity,
-            # "is_asymmetry_detected": final_pct > 35,
+            "severity_score":  final_score,
+            "status_label":    severity,
+            "low_confidence":  low_confidence,
             "metrics": {
-                "raw_severity_pct": final_pct, # Simpan nilai asli jika frontend tetap butuh
-                "mouth_diff_deg": round(mouth_diff, 2),
-                "eye_asymmetry_ratio": round(eye_asym, 4)
+                "mouth_corner_norm":   contributions['mouth_corner'],
+                "eye_openness_norm":   contributions['eye_openness'],
+                "lip_curl_norm":       contributions['lip_curl'],
+                "eyebrow_height_norm": contributions['eyebrow_height'],
+                "nasolabial_norm":     contributions['nasolabial'],
+                "roll_correction_deg": round(math.degrees(roll_rad), 2),
             }
         }
-    
+
+
     # ==========================================
     # ENDPOINT 2: EYE SYMMETRY (IMPROVED)
     # ==========================================
