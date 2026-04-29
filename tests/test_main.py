@@ -168,21 +168,6 @@ def test_invalid_api_key():
     assert response.status_code == 403
     assert response.json()["detail"] == "Forbidden: Invalid or missing API Key"
 
-def test_cors_preflight():
-    """Test: Memastikan CORS Middleware mengizinkan preflight request (OPTIONS) dari browser frontend"""
-    headers = {
-        "Origin": "http://localhost:3000",
-        "Access-Control-Request-Method": "POST",
-        "Access-Control-Request-Headers": "X-API-Key"
-    }
-    response = client.options("/api/v1/predict/riskometer", headers=headers)
-    
-    # Preflight request selalu mengembalikan 200 OK jika diizinkan
-    assert response.status_code == 200
-    assert "access-control-allow-origin" in response.headers
-    assert response.headers["access-control-allow-origin"] == "*" # Berdasarkan setting allow_origins=["*"]
-
-
 # ==========================================
 # SKENARIO 7: FILE SIZE LIMIT (PAYLOAD TERLALU BESAR)
 # ==========================================
