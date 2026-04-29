@@ -51,6 +51,7 @@ def configure_openapi_schemas(app: FastAPI):
             "Body_analyze_facial_palsy_api_v1_analyze_facial_palsy_post": "FacialPalsyUpload",
             "Body_analyze_eye_symmetry_api_v1_analyze_eye_symmetry_post": "EyeSymmetryUpload",
             "Body_analyze_speech_api_v1_analyze_speech_dysarthria_post": "SpeechAudioUpload",
+            "Body_analyze_arm_weakness_api_v1_analyze_arm_weakness_post": "ArmWeaknessVideoUpload",
         }
 
         for old_name, new_name in replacements.items():

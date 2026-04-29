@@ -27,7 +27,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE_MB", 25)) * 1024 * 1024
 ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/jpg"]
-ALLOWED_AUDIO_MIME_TYPES =["audio/wav", "audio/x-wav", "audio/wave"]
+ALLOWED_AUDIO_MIME_TYPES =["audio/wav", "audio/x-wav", "audio/wave", "audio/m4a", "audio/x-m4a", "audio/mp4"]
 ALLOWED_VIDEO_MIME_TYPES =["video/mp4", "video/x-msvideo", "video/quicktime"]
 
 api_key_header = APIKeyHeader(

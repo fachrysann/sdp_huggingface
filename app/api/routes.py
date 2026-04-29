@@ -6,6 +6,8 @@ from app.schemas import StrokePredictorInput
 from datetime import datetime
 import tempfile # Tambahkan di atas
 import os
+import io
+from pydub import AudioSegment
 
 from app.config import (
     get_api_key, MAX_FILE_SIZE, ALLOWED_MIME_TYPES, ALLOWED_AUDIO_MIME_TYPES, ALLOWED_VIDEO_MIME_TYPES,
@@ -54,14 +56,34 @@ async def process_uploaded_image(file: UploadFile):
     
 # --- HELPER FUNCTION: Untuk mengolah audio yang diupload ---
 async def process_uploaded_audio(file: UploadFile):
-    # Validasi Tipe File Ekstensi & MIME
-    if not file.filename.lower().endswith('.wav') or file.content_type not in ALLOWED_AUDIO_MIME_TYPES:
-        raise HTTPException(status_code=415, detail="Unsupported media type. Hanya mendukung file .wav")
+    # 1. Validasi Tipe File Ekstensi (Tambah .m4a)
+    valid_extensions = ('.wav', '.m4a')
+    if not file.filename.lower().endswith(valid_extensions) or file.content_type not in ALLOWED_AUDIO_MIME_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported media type. Hanya mendukung file .wav dan .m4a")
 
-    # Validasi Ukuran & Baca File
+    # 2. Validasi Ukuran & Baca File
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="Payload too large. File exceeds maximum allowed size.")
+
+    # 3. Konversi .m4a ke .wav (Dalam Memori)
+    if file.filename.lower().endswith('.m4a') or "m4a" in file.content_type or "mp4" in file.content_type:
+        try:
+            # Baca bytes m4a ke AudioSegment
+            audio = AudioSegment.from_file(io.BytesIO(contents), format="m4a")
+            
+            # Buat wadah memory baru untuk wav
+            wav_io = io.BytesIO()
+            audio.export(wav_io, format="wav")
+            
+            # Timpa contents dengan bytes wav yang baru
+            contents = wav_io.getvalue()
+        except Exception as e:
+            print(f"Pydub/FFmpeg Error: {str(e)}")
+            raise HTTPException(
+                status_code=500, 
+                detail="Gagal mengkonversi audio m4a. Pastikan FFmpeg sudah terinstal di server."
+            )
     return contents
 
 # ==================================================
@@ -304,17 +326,17 @@ async def predict_stroke(
     "/analyze/speech-dysarthria",
     tags=["Speech Dysarthria Analysis"],
     summary="Detect Dysarthria from Speech",
-    description="Uploads a voice recording (.wav) to detect signs of Dysarthria (slurred speech) often associated with strokes. Converts audio to Mel-Spectrogram and runs it through a ResNet-18 model.",
+    description="Uploads a voice recording (.wav or .m4a) to detect signs of Dysarthria (slurred speech) often associated with strokes...",
     responses={
         200: {"description": "Successfully analyzed speech recording."},
         403: {"description": "Forbidden: Invalid or missing API Key."},
         413: {"description": "Payload too large (File exceeds 5MB)."},
-        415: {"description": "Unsupported media type (Only .wav allowed)."},
+        415: {"description": "Unsupported media type (Only .wav and .m4a allowed)."},
         500: {"description": "Internal server error processing the audio."}
     }
 )
 async def analyze_speech(
-    file: UploadFile = File(..., description="Audio file in .wav format containing the patient's speech"),
+    file: UploadFile = File(..., description="Audio file in .wav or .m4a format containing the patient's speech"),
     api_key: str = Depends(get_api_key),
     audio_analyzer: AudioAnalyzerService = Depends(get_audio_analyzer)
 ):
@@ -349,6 +371,13 @@ async def analyze_speech(
     tags=["Arm Weakness Analysis"],
     summary="Analyze Arm Weakness from Video",
     description="Uploads a video evaluating the patient's arm strength by holding both arms raised. Returns severity score and a processed mp4 video URL.",
+    responses={
+        200: {"description": "Successfully analyzed arm weakness video."},
+        403: {"description": "Forbidden: Invalid or missing API Key."},
+        413: {"description": "Payload too large (File exceeds maximum allowed size)."},
+        415: {"description": "Unsupported media type (Only MP4, AVI, and MOV allowed)."},
+        500: {"description": "Internal server error during video analysis or processing."}
+    }
 )
 async def analyze_arm_weakness(
     file: UploadFile = File(..., description="Video file (.mp4) of the patient holding both arms up."),

@@ -48,3 +48,4 @@ gunicorn==22.0.0
 torch
 torchaudio
 supabase
+pydub==0.25.1
