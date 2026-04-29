@@ -44,7 +44,7 @@ jobs:
 
       - name: Run Tests (Pytest)
         run: |
-          pytest test_main.py -v
+          pytest tests/test_main.py -v
 
 
   # ==========================================
