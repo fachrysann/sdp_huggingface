@@ -24,21 +24,23 @@ pinned: false
 
 ## 1. Deskripsi
 
-**Stroke Detect Pro API** adalah REST API berkinerja tinggi yang dibangun menggunakan **FastAPI** untuk mendeteksi tanda-tanda awal indikasi Stroke. API ini menggunakan pendekatan multimodal (3 metode analisis) untuk memberikan hasil yang komprehensif:
+**Stroke Detect Pro API** adalah REST API berkinerja tinggi yang dibangun menggunakan **FastAPI** untuk mendeteksi tanda-tanda awal indikasi Stroke. API ini menggunakan pendekatan multimodal (5 metode analisis terintegrasi) untuk memberikan hasil diagnostik yang komprehensif:
 
-1. **Vision Analysis (MediaPipe & OpenCV)**: Deteksi asimetri wajah (Facial Palsy) dan koordinasi arah lirikan mata (Eye Symmetry).
-2. **Tabular Prediction (Scikit-Learn Random Forest)**: Analisis persentase risiko stroke berdasarkan metrik data medis pasien yang dikenal sebagai *Riskometer*.
-3. **Speech Analysis (PyTorch ResNet-18)**: Analisis rekaman suara (Mel-Spectrogram) untuk klasifikasi *binary* deteksi penderita *Dysarthria* (bicara cadel/tidak jelas).
+1. **Facial Palsy (Vision Analysis - MediaPipe & OpenCV)**: Deteksi kelumpuhan atau asimetri pada otot di salah satu sisi wajah pasien.
+2. **Eye Gaze Deviation (Vision Analysis - MediaPipe & OpenCV)**: Analisis koordinasi arah lirikan mata untuk mendeteksi penyimpangan, ketidakselarasan, atau kesulitan fokus.
+3. **Arm Weakness (Pose Analysis - MediaPipe)**: Deteksi kelemahan motorik dengan melacak asimetri atau penurunan rentang gerak saat pasien mengangkat kedua lengan (*Pronator Drift Test*).
+4. **Speech Dysarthria (Audio Analysis - PyTorch ResNet-18)**: Analisis rekaman suara (ekstraksi *Mel-Spectrogram*) untuk mendeteksi indikasi *Dysarthria* (suara cadel, terseret, atau tidak jelas).
+5. **Riskometer (Tabular Prediction - Scikit-Learn Random Forest)**: Analisis klasifikasi persentase risiko stroke berdasarkan metrik data historis dan gaya hidup (kondisi medis) pasien.
 
 ### Teknologi yang Digunakan
 
 | Komponen | Teknologi | Fungsi |
 |----------|-----------|--------|
-| **Framework Web** | FastAPI, Pydantic | REST API, Validasi Data, Swagger UI |
-| **Vision AI** | MediaPipe, OpenCV | Deteksi landmark wajah & kalkulasi asimetri |
-| **Tabular AI** | Scikit-Learn, Pandas | Prediksi *machine learning* berbasis data medis |
-| **Audio AI** | PyTorch, Torchaudio | Ekstraksi fitur audio & klasifikasi *Deep Learning* |
-| **Deployment** | Docker, Hugging Face | Hosting & manajemen container yang dioptimasi |
+| **Framework API** | FastAPI, Pydantic | *Routing* REST API, validasi skema data, dan autogenerasi dokumentasi (Swagger UI). |
+| **Vision & Pose AI** | MediaPipe, OpenCV, MTCNN | *Face alignment*, deteksi *landmark* wajah, analisis lirikan mata, dan pelacakan gerak lengan (*Pose Estimation*). |
+| **Audio AI** | PyTorch, Torchaudio | Ekstraksi fitur suara (*Mel-Spectrogram*) & inferensi model ResNet-18 untuk klasifikasi *Dysarthria*. |
+| **Tabular AI** | Scikit-Learn, Pandas | Pemrosesan data medis pasien & klasifikasi *Random Forest* untuk kalkulasi persentase *Riskometer*. |
+| **Deployment** | Docker, Hugging Face Spaces | Kontainerisasi lingkungan *server* dan *hosting* infrastruktur API yang dioptimasi. |
 
 ---
 
@@ -54,6 +56,7 @@ stroke-detect-pro/
 │   │   └── routes.py              # Seluruh HTTP Endpoints
 │   └── services/
 │       ├── speech_service.py      # Logika PyTorch Audio (Dysarthria)
+│       ├── arm_service.py         # Logika MediaPipe & OpenCV (Arm Weakness)
 │       ├── riskometer_service.py  # Logika Scikit-Learn (Stroke Riskometer)
 │       └── facial_service.py      # Logika MediaPipe & OpenCV (Facial Palsy & Gaze)
 ├── model/                         # Folder Git LFS
@@ -128,7 +131,7 @@ Buka browser dan akses antarmuka Swagger UI di: **`http://localhost:8000/docs`**
 *Catatan Penting: Semua endpoint wajib menyertakan API Key pada Header:*  
 `X-API-Key: <your_secret_api_key_here>`
 
-### 1️⃣ VISION: Deteksi Facial Palsy (Asimetri Mulut & Wajah)
+### 1. VISION: Deteksi Facial Palsy (Asimetri Mulut & Wajah)
 Mendeteksi asimetri otot wajah yang menjadi indikator kuat stroke.
 
 - **URL:** `POST /api/v1/analyze/facial-palsy`
@@ -146,11 +149,13 @@ Mendeteksi asimetri otot wajah yang menjadi indikator kuat stroke.
       "eye_asymmetry_ratio": 0.15
     }
   },
-  "image_result": "data:image/jpeg;base64,/9j/4AAQSk..."
+  "image_url": "https://ieynubgblcwhbllkcauj.supa..."
 }
 ```
 
-### 2️⃣ VISION: Deteksi Asimetri Mata (Gaze Symmetry)
+---
+
+### VISION: Deteksi Asimetri Mata (Gaze Symmetry)
 Mengevaluasi keselarasan koordinasi arah lirikan pupil mata menggunakan rasio *Medial-Lateral*.
 
 - **URL:** `POST /api/v1/analyze/eye-symmetry`
@@ -168,11 +173,65 @@ Mengevaluasi keselarasan koordinasi arah lirikan pupil mata menggunakan rasio *M
       "gaze_difference": 0.25
     }
   },
-  "image_result": "data:image/jpeg;base64,/9j/4AAQSk..."
+  "image_url": "https://ieynubgblcwhbllkcauj.supa..."
 }
 ```
 
-### 3️⃣ TABULAR: Prediksi Riskometer Stroke (Data Medis)
+---
+
+### POSE: Deteksi Kelemahan Lengan (Arm Weakness)
+Mendeteksi indikasi kelemahan motorik saat pasien mengangkat kedua lengan (Pronator Drift Test) dalam durasi 10 detik.
+- **URL:** `POST /api/v1/analyze/arm-weakness`
+- **Request:** `multipart/form-data` -> `file` (Video .mp4, .avi)
+- **Response:**
+```JSON
+{
+  "status": "success",
+  "data": {
+    "severity_score": 50,
+    "status_label": "Kelemahan Lengan Kiri",
+    "metrics": {
+      "max_arm_drift_ratio": 0.455,
+      "max_asymmetry_ratio": 0.320,
+      "test_duration_analyzed_sec": 10.0
+    }
+  },
+  "video_url": "https://ieynubgblcwhbllkcauj.supab..."
+}
+```
+
+---
+
+### AUDIO: Deteksi Dysarthria (Analisis Suara)
+Menganalisis rekaman suara (*Mel-Spectrogram*) menggunakan model *ResNet-18 Binary* untuk mendeteksi *slurred speech* (Disartria).
+
+![Ilustrasi Arsitektur](assets/resnet34.png)
+
+- **URL:** `POST /api/v1/analyze/speech-dysarthria`
+- **Request:** `multipart/form-data` -> `file` (Audio berektensi .wav, .m4a)
+- **Response:**
+```json
+{
+  "status": "success",
+  "filename": "pasien_audio_01.wav",
+  "data": {
+    "severity_score": 92,
+    "status_label": "Indikasi Kuat Disartria",
+    "metrics": {
+      "predicted_class": "Dysarthria",
+      "confidence_percentage": 92.4,
+      "probabilities": {
+        "Dysarthria": 92.4,
+        "Non-Dysarthria": 7.6
+      }
+    }
+  }
+}
+```
+
+---
+
+### TABULAR: Prediksi Riskometer Stroke (Data Medis)
 Memprediksi kelas & probabilitas risiko stroke pasien menggunakan algoritma *Random Forest*.
 
 - **URL:** `POST /api/v1/predict/riskometer`
@@ -204,33 +263,6 @@ Memprediksi kelas & probabilitas risiko stroke pasien menggunakan algoritma *Ran
 }
 ```
 
-### 4️⃣ AUDIO: Deteksi Dysarthria (Analisis Suara)
-Menganalisis rekaman suara (*Mel-Spectrogram*) menggunakan model *ResNet-18 Binary* untuk mendeteksi *slurred speech* (Disartria).
-
-![Ilustrasi Arsitektur](assets/resnet34.png)
-
-- **URL:** `POST /api/v1/analyze/speech-dysarthria`
-- **Request:** `multipart/form-data` -> `file` (Audio berektensi `.wav`)
-- **Response:**
-```json
-{
-  "status": "success",
-  "filename": "pasien_audio_01.wav",
-  "data": {
-    "severity_score": 92,
-    "status_label": "Indikasi Kuat Disartria",
-    "metrics": {
-      "predicted_class": "Dysarthria",
-      "confidence_percentage": 92.4,
-      "probabilities": {
-        "Dysarthria": 92.4,
-        "Non-Dysarthria": 7.6
-      }
-    }
-  }
-}
-```
-
 ---
 
 ## 5. Deployment & Production (Docker)
@@ -249,24 +281,6 @@ docker build -t stroke-detect-api .
 docker run -d -p 8000:8000 --env-file .env --name stroke-api stroke-detect-api
 ```
 Server akan berjalan di `http://localhost:8000`.
-
-### Standar Industri Dockerfile Proyek Ini
-Aplikasi ini sudah dipersiapkan sebagai konfigurasi *Production-Ready*, terutama jika di-*deploy* ke Hugging Face Spaces:
-- **PyTorch CPU-Only Efficiency:** Mengunduh modul AI versi `cpu` (`--extra-index-url https://download.pytorch.org/whl/cpu`) memangkas ukuran *image* Docker lebih dari 2GB (karena tidak mengunduh library CUDA GPU).
-- **Sistem Dependensi C & C++ yang Utuh:** Sudah dilengkapi pustaka mesin Linux `libgl1` (mutlak dibutuhkan OpenCV untuk pemrosesan citra) dan `libsndfile1` (dibutuhkan `soundfile` untuk pemrosesan audio `.wav`).
-- **Antisipasi Timeout (*Gunicorn*):** Timeout *worker* dipasang di angka `120 detik` (`--timeout 120`). Karena *model inference* (seperti ResNet18 dan MediaPipe) terkadang membutuhkan durasi komputasi yang bervariasi, konfigurasi ini mencegah gangguan koneksi API (seperti error HTTP 504).
-
----
-
-## 6. Changelog
-
-### v1.0.0 (Current Release)
-- **[Fitur Baru]** Integrasi Tabular Random Forest Model (Riskometer dengan persentase skor risiko).
-- **[Fitur Baru]** Integrasi PyTorch Audio ResNet18 Binary class (Dysarthria vs Non-Dysarthria).
-- **[Peningkatan]** Refactor arsitektur menjadi *Services Pattern* (`facial_service.py`, `riskometer_service.py`, `speech_service.py`).
-- **[Peningkatan]** *Helper* enkripsi *Base64* otomatis melakuan rasio kompresi gambar (lebar maks 720px) agar respons API ringan saat di-parsing oleh perangkat Mobile/Frontend.
-- **[Peningkatan]** Standardisasi output response (`severity_score`, `status_label`, `metrics`) pada semua endpoints AI.
-- **[Peningkatan]** Penambahan Pydantic Schemas untuk membangun OpenAPI/Swagger UI yang rapi.
 
 ---
 
