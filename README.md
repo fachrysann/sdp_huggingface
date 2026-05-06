@@ -131,7 +131,9 @@ Buka browser dan akses antarmuka Swagger UI di: **`http://localhost:8000/docs`**
 *Catatan Penting: Semua endpoint wajib menyertakan API Key pada Header:*  
 `X-API-Key: <your_secret_api_key_here>`
 
-### 1. VISION: Deteksi Facial Palsy (Asimetri Mulut & Wajah)
+---
+
+### VISION: Deteksi Facial Palsy (Asimetri Mulut & Wajah)
 Mendeteksi asimetri otot wajah yang menjadi indikator kuat stroke.
 
 - **URL:** `POST /api/v1/analyze/facial-palsy`
