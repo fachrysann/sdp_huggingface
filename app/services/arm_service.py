@@ -41,13 +41,16 @@ class ArmAnalyzerService:
         cap = cv2.VideoCapture(input_video_path)
         
         fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps == 0 or math.isnan(fps): fps = 30
+        # PERBAIKAN 1: Cegah FPS yang tidak masuk akal (misal > 120) akibat bug OpenCV membaca metadata video HP
+        if fps <= 0 or math.isnan(fps) or fps > 120: 
+            fps = 30
+            
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
         # Konfigurasi Video Writer (Gunakan mp4v atau avc1)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_video_path, fourcc, fps, (w, h))
+        out = cv2.VideoWriter(output_video_path, fourcc, int(fps), (w, h))
 
         # --- STATE MANAGEMENT ---
         test_active = False
@@ -63,18 +66,32 @@ class ArmAnalyzerService:
         final_result_label = "Normal / Kekuatan Penuh"
         
         frame_idx = 0
+        last_timestamp_ms = -1 # PERBAIKAN 2: Variabel pelacak timestamp sebelumnya
 
         while cap.isOpened():
             success, frame = cap.read()
             if not success:
                 break
                 
-            # Hitung timestamp berdasarkan frame untuk MediaPipe Video Mode
-            timestamp_ms = int((frame_idx / fps) * 1000)
-            current_sec = frame_idx / fps
+            # --- PERBAIKAN 3: LOGIKA TIMESTAMP MONOTONIK ---
+            # Hitung timestamp berdasarkan frame
+            calculated_timestamp_ms = int((frame_idx / fps) * 1000)
+            
+            # Pastikan timestamp SELALU LEBIH BESAR dari frame sebelumnya
+            if calculated_timestamp_ms <= last_timestamp_ms:
+                timestamp_ms = last_timestamp_ms + 1
+            else:
+                timestamp_ms = calculated_timestamp_ms
+                
+            # Update last_timestamp_ms untuk pengecekan frame berikutnya
+            last_timestamp_ms = timestamp_ms
+            
+            current_sec = timestamp_ms / 1000.0
             frame_idx += 1
+            # -----------------------------------------------
 
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+            # Masukkan timestamp yang sudah dijamin naik
             result = self.landmarker.detect_for_video(mp_image, timestamp_ms)
 
             if result.pose_landmarks:
@@ -172,8 +189,6 @@ class ArmAnalyzerService:
         out.release()
 
         # KALKULASI SKOR SEVERITY (0-100)
-        # Jika max_drift mencapai drift_threshold -> severity = 50%
-        # Jika max_drift mencapai 2x drift_threshold -> severity = 100%
         severity_ratio = (max_drift / drift_threshold_ref) if drift_threshold_ref > 0 else 0
         severity_score = int(min(100, max(0, severity_ratio * 50)))
 
@@ -185,7 +200,7 @@ class ArmAnalyzerService:
         metrics = {
             "max_arm_drift_ratio": round(severity_ratio, 3),
             "max_asymmetry_ratio": round(max_asymmetry / drift_threshold_ref, 3) if drift_threshold_ref > 0 else 0,
-            "test_duration_analyzed_sec": round(current_sec, 2)
+            "test_duration_analyzed_sec": round(current_sec, 2) if 'current_sec' in locals() else 0.0
         }
 
         return {
