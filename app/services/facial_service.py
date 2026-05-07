@@ -174,7 +174,8 @@ class FaceAnalyzerService:
             return None, None
  
         landmarks = detection_result.face_landmarks[0]
-        results   = self._calculate_and_draw(landmarks, aligned_bgr)
+        angle = align_meta["rotation_angle_deg"] if align_meta else 0.0
+        results = self._calculate_and_draw(landmarks, aligned_bgr, rotation_angle_deg=angle)
  
         # ── Step 3: Tambahkan metadata alignment ke hasil ────────────────────
         if align_meta:
@@ -206,7 +207,7 @@ class FaceAnalyzerService:
                 (180, 255, 180), 1, cv2.LINE_AA
             )
  
-    def _calculate_and_draw(self, landmarks, image):
+    def _calculate_and_draw(self, landmarks, image, rotation_angle_deg: float = 0.0):
         h, w, _ = image.shape
  
         def get_pt(i):
@@ -237,9 +238,13 @@ class FaceAnalyzerService:
         left_eye_open  = landmarks[159].y - landmarks[145].y
         right_eye_open = landmarks[386].y - landmarks[374].y
         eye_asym       = abs(left_eye_open - right_eye_open) / face_scale * 10
+
+        base_dead_zone   = 3.0
+        rotation_penalty = abs(rotation_angle_deg) * 0.15  # tiap 1° rotasi → +0.15 toleransi
+        mouth_dead_zone  = base_dead_zone + rotation_penalty
  
         # Scoring
-        m_pct = (mouth_diff / 10.0) * 100 if mouth_diff > 2.5 else 0
+        m_pct = (mouth_diff / 10.0) * 100 if mouth_diff > mouth_dead_zone else 0
         e_pct = (eye_asym / 0.5)    * 100 if eye_asym > 0.08  else 0
         final_pct = round(min(100, max(m_pct, e_pct)))
  
@@ -299,32 +304,44 @@ class FaceAnalyzerService:
     # ==========================================
     # ENDPOINT 2: EYE SYMMETRY (IMPROVED)
     # ==========================================
-    def get_gaze_ratio(self, iris_pt, corner_medial, corner_lateral, w, h):
-        """Hitung posisi iris relatif dari sudut MEDIAL ke LATERAL."""
+    def get_gaze_ratio(self, iris_pt, corner_left, corner_right, w, h):
+        """
+        Hitung posisi iris dari pojok KIRI gambar ke pojok KANAN gambar.
+        Selalu pass corner dengan x lebih kecil sebagai corner_left.
+        Return 0.0 = paling kiri, 0.5 = tengah, 1.0 = paling kanan.
+        """
         ix  = iris_pt.x * w
-        iy  = iris_pt.y * h
-        cmx = corner_medial.x * w
-        cmy = corner_medial.y * h
-        clx = corner_lateral.x * w
-        cly = corner_lateral.y * h
+        cmx = corner_left.x * w
+        cmy = corner_left.y * h
+        clx = corner_right.x * w
+        cly = corner_right.y * h
 
         dist_total = math.sqrt((clx - cmx)**2 + (cly - cmy)**2)
         if dist_total < 1e-6:
             return 0.5
 
-        # Proyeksi iris ke axis medial→lateral
         axis_x = (clx - cmx) / dist_total
         axis_y = (cly - cmy) / dist_total
-        proj   = (ix - cmx) * axis_x + (iy - cmy) * axis_y
+        proj   = (ix - cmx) * axis_x + (iris_pt.y * h - cmy) * axis_y
 
         return max(0.0, min(1.0, proj / dist_total))
 
     def analyze_eye_symmetry(self, image: np.ndarray):
         """Method Public untuk Endpoint /analyze/eye-symmetry"""
-        # [PENTING]: MediaPipe butuh RGB, sedangkan input dari OpenCV adalah BGR.
-        image_rgb = np.ascontiguousarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
-        
+        # ── Step 1: MTCNN alignment (Luruskan & Crop Wajah) ──────────────────
+        aligned_rgb, align_meta = self._align_face_with_mtcnn(image)
+ 
+        if aligned_rgb is None:
+            # Fallback: coba langsung tanpa alignment jika MTCNN gagal
+            print("[WARN] MTCNN gagal mendeteksi wajah – mencoba tanpa alignment.")
+            aligned_rgb = np.ascontiguousarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            align_meta  = None
+ 
+        # Ubah ke BGR untuk proses visualisasi OpenCV selanjutnya
+        aligned_bgr = cv2.cvtColor(aligned_rgb, cv2.COLOR_RGB2BGR)
+
+        # ── Step 2: Deteksi MediaPipe pada wajah yang sudah tegak lurus ──────
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=aligned_rgb)
         detection_result = self.landmarker.detect(mp_image)
 
         if not detection_result.face_landmarks:
@@ -332,31 +349,39 @@ class FaceAnalyzerService:
 
         landmarks = detection_result.face_landmarks[0]
         
-        results, cropped_eye_image = self._calculate_eye_symmetry(landmarks, image)
+        # Kirim gambar yang sudah di-align (aligned_bgr) ke kalkulator
+        results, cropped_eye_image = self._calculate_eye_symmetry(landmarks, aligned_bgr)
         
+        # ── Step 3: Tambahkan metadata alignment ke output JSON ──────────────
+        if align_meta:
+            results["alignment"] = {
+                "rotation_angle_deg": align_meta["rotation_angle_deg"],
+                "eye_distance_px"   : align_meta["eye_distance_px"],
+                "mtcnn_confidence"  : align_meta["confidence"],
+            }
+
         return results, cropped_eye_image
 
     def _calculate_eye_symmetry(self, landmarks, image):
+        # (Kode di dalam _calculate_eye_symmetry ini TETAP SAMA seperti milik Anda, 
+        # tidak perlu diubah karena math-nya akan otomatis menyesuaikan dengan 
+        # dimensi gambar wajah yang sudah lurus).
+        
         h, w, _ = image.shape
 
         # ---- Landmark ----
         l_iris     = landmarks[468]   
-        l_medial   = landmarks[33]    
-        l_lateral  = landmarks[133]   
 
         r_iris     = landmarks[473]   
-        r_medial   = landmarks[263]   
-        r_lateral  = landmarks[362]   
 
         # ---- Gaze ratio ----
-        gaze_L = self.get_gaze_ratio(l_iris, l_medial, l_lateral, w, h)
-        gaze_R = self.get_gaze_ratio(r_iris, r_medial, r_lateral, w, h)
+        gaze_L = self.get_gaze_ratio(l_iris, landmarks[133], landmarks[33], w, h)
+        gaze_R = self.get_gaze_ratio(r_iris, landmarks[263], landmarks[362], w, h)
 
-        # ---- Sinkronisasi ----
         gaze_diff = abs(gaze_L - gaze_R)
 
-        THRESH_NORMAL = 0.04   
-        THRESH_MILD   = 0.10   
+        THRESH_NORMAL = 0.10  
+        THRESH_MILD   = 0.20  
 
         if gaze_diff <= THRESH_NORMAL:
             score  = int((gaze_diff / THRESH_NORMAL) * 20)  
@@ -372,9 +397,6 @@ class FaceAnalyzerService:
             score  = int(50 + (t * 50))                     
             status = "Asimetri Parah"
             color  = (0, 0, 255) # Merah
-
-        # --- LOGIKA TAMBAHAN UNTUK MENCEGAH ERROR PYDANTIC ---
-        is_anomaly = bool(score > 35)
         
         CENTER = 0.5
         DEAD_ZONE = 0.12

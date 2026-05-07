@@ -102,7 +102,7 @@ class AudioAnalyzerService:
             elif severity_score > 50:
                 status_label = "Indikasi Ringan Disartria"
             else:
-                status_label = "Suara Normal"
+                status_label = "Normal"
 
             # Ambil prediksi akhir & persentase lengkap untuk direkam ke metrics
             predicted_idx = torch.argmax(probabilities).item()

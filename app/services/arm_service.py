@@ -42,6 +42,22 @@ class ArmAnalyzerService:
         return vision.PoseLandmarker.create_from_options(options)
 
     def analyze_arm_weakness(self, input_video_path: str, output_video_path: str):
+        
+        # --- ENTERPRISE UI HELPER ---
+        def draw_ui_box(img, text, x, y, bg_color=(30, 30, 30), text_color=(255, 255, 255), font_scale=0.7, thickness=2):
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            (tw, th), _ = cv2.getTextSize(text, font, font_scale, thickness)
+            
+            pad_x, pad_y = 15, 10
+            overlay = img.copy()
+            # Gambar box dengan sudut tegas khas UI Enterprise
+            cv2.rectangle(overlay, (x, y), (x + tw + pad_x*2, y + th + pad_y*2), bg_color, -1)
+            # Alpha blending untuk transparansi
+            cv2.addWeighted(overlay, 0.85, img, 0.15, 0, img)
+            
+            # Render teks presisi
+            cv2.putText(img, text, (x + pad_x, y + th + pad_y), font, font_scale, text_color, thickness, cv2.LINE_AA)
+        
         # PERBAIKAN: Inisialisasi Landmarker per-request agar state timestamps direset
         # dan tidak bocor/tabrakan (race condition) dengan request user lain.
         landmarker = self._initialize_model()
@@ -118,10 +134,18 @@ class ArmAnalyzerService:
                         
                         arms_raised = (lw.y < ls.y + 0.25) and (rw.y < rs.y + 0.25)
 
-                        cv2.line(frame, pt_ls, pt_lw, (255, 255, 0), 2)
-                        cv2.line(frame, pt_rs, pt_rw, (255, 255, 0), 2)
-                        cv2.circle(frame, pt_lw, 8, (0, 0, 255), -1)
-                        cv2.circle(frame, pt_rw, 8, (0, 0, 255), -1)
+                        # TAMPILAN VISUALISASI KINEMATIK (Enterprise Style)
+                        color_bone = (255, 180, 50)  # Skema warna Soft Blue/Cyan untuk frame rangka
+                        
+                        # Garis Lengan (Bones)
+                        cv2.line(frame, pt_ls, pt_lw, color_bone, 3, cv2.LINE_AA)
+                        cv2.line(frame, pt_rs, pt_rw, color_bone, 3, cv2.LINE_AA)
+                        
+                        # Titik Sendi (Wrists dengan outer halo)
+                        cv2.circle(frame, pt_lw, 9, color_bone, 2, cv2.LINE_AA)
+                        cv2.circle(frame, pt_lw, 4, (255, 255, 255), -1, cv2.LINE_AA)
+                        cv2.circle(frame, pt_rw, 9, color_bone, 2, cv2.LINE_AA)
+                        cv2.circle(frame, pt_rw, 4, (255, 255, 255), -1, cv2.LINE_AA)
 
                         if not test_active and arms_raised:
                             test_active = True
@@ -133,8 +157,16 @@ class ArmAnalyzerService:
                             elapsed = current_sec - test_start_sec
                             
                             if elapsed <= 10.0:
-                                cv2.line(frame, (0, int(baseline_ly * h)), (w, int(baseline_ly * h)), (0, 255, 0), 1)
-                                cv2.line(frame, (0, int(baseline_ry * h)), (w, int(baseline_ry * h)), (0, 255, 0), 1)
+                                y_l = int(baseline_ly * h)
+                                y_r = int(baseline_ry * h)
+                                color_baseline = (100, 200, 100) # Soft Green
+                                
+                                # Baseline trackers presisi tinggi
+                                cv2.line(frame, (0, y_l), (w, y_l), color_baseline, 2, cv2.LINE_AA)
+                                cv2.putText(frame, "REF L", (10, y_l - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color_baseline, 1, cv2.LINE_AA)
+                                
+                                cv2.line(frame, (0, y_r), (w, y_r), color_baseline, 2, cv2.LINE_AA)
+                                cv2.putText(frame, "REF R", (w - 60, y_r - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color_baseline, 1, cv2.LINE_AA)
 
                                 drift_left = lw.y - baseline_ly
                                 drift_right = rw.y - baseline_ry
@@ -159,7 +191,8 @@ class ArmAnalyzerService:
                                     
                                     violation_duration = current_sec - violation_start_sec
                                     
-                                    cv2.putText(frame, f"WARNING: {current_violation}!", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                                    # Peringatan Visual Box
+                                    draw_ui_box(frame, f"WARNING: {current_violation}!", 30, 140, bg_color=(0, 0, 180), font_scale=0.8)
                                     
                                     if violation_duration > 2.0:
                                         final_result_label = current_violation
@@ -167,15 +200,21 @@ class ArmAnalyzerService:
                                     violation_start_sec = None
 
                                 remaining = max(0, 10.0 - elapsed)
-                                cv2.putText(frame, f"Time: {remaining:.1f}s", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
+                                draw_ui_box(frame, f"EVALUATION TIME: {remaining:.1f}s", 30, 70, bg_color=(180, 100, 0), font_scale=0.8)
                             
                             else:
-                                color = (0, 255, 0) if "Normal" in final_result_label else (0, 0, 255)
-                                cv2.putText(frame, "HASIL ANALISIS:", (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                                cv2.putText(frame, final_result_label, (50, 130), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
+                                bg_color_result = (0, 140, 0) if "Normal" in final_result_label else (0, 0, 180)
+                                draw_ui_box(frame, "STATUS: ANALYSIS COMPLETE", 30, 70, bg_color=(40, 40, 40), font_scale=0.8)
+                                draw_ui_box(frame, f"RESULT: {final_result_label}", 30, 140, bg_color=bg_color_result, font_scale=0.9)
 
                 else:
-                    cv2.putText(frame, "No Body Detected", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    draw_ui_box(frame, "NO SUBJECT DETECTED", 30, 70, bg_color=(0, 0, 180), font_scale=0.8)
+
+                # --- ENTERPRISE HEADER BAR ---
+                overlay_header = frame.copy()
+                cv2.rectangle(overlay_header, (0, 0), (w, 45), (20, 20, 20), -1)
+                cv2.addWeighted(overlay_header, 0.85, frame, 0.15, 0, frame)
+                cv2.putText(frame, "CLINICAL KINEMATICS: ARM MOTOR DRIFT ANALYSIS", (20, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (240, 240, 240), 1, cv2.LINE_AA)
 
                 out.write(frame)
 
