@@ -249,7 +249,7 @@ class FaceAnalyzerService:
         elif final_pct > 30:
             severity, desc, color = "Asimetri Ringan",    "Deviasi ringan",                 (0, 165, 255)
         else:
-            severity, desc, color = "Dalam Batas Normal", "Tidak ada gejala signifikan.",   (0, 255, 0)
+            severity, desc, color = "Normal", "Tidak ada gejala signifikan.",   (0, 255, 0)
  
         # --- VISUALIZATION ---
  
@@ -360,7 +360,7 @@ class FaceAnalyzerService:
 
         if gaze_diff <= THRESH_NORMAL:
             score  = int((gaze_diff / THRESH_NORMAL) * 20)  
-            status = "Normal / Simetris"
+            status = "Normal"
             color  = (0, 255, 0) # Hijau
         elif gaze_diff <= THRESH_MILD:
             t      = (gaze_diff - THRESH_NORMAL) / (THRESH_MILD - THRESH_NORMAL)
