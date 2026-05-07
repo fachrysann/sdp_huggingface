@@ -16,7 +16,10 @@ class ArmAnalyzerService:
         self.model_path = os.path.join(self.model_dir, 'pose_landmarker.task')
 
         self._ensure_model_exists()
-        self.landmarker = self._initialize_model()
+        
+        # PERBAIKAN: Baca model bytes satu kali ke memori agar lebih cepat & thread-safe
+        with open(self.model_path, "rb") as f:
+            self.model_bytes = f.read()
 
     def _ensure_model_exists(self):
         if not os.path.exists(self.model_dir):
@@ -28,7 +31,8 @@ class ArmAnalyzerService:
             urllib.request.urlretrieve(url, self.model_path)
 
     def _initialize_model(self):
-        base_options = python.BaseOptions(model_asset_path=self.model_path)
+        # Gunakan buffer dari memori alih-alih path file
+        base_options = python.BaseOptions(model_asset_buffer=self.model_bytes)
         options = vision.PoseLandmarkerOptions(
             base_options=base_options,
             output_segmentation_masks=False,
@@ -38,161 +42,154 @@ class ArmAnalyzerService:
         return vision.PoseLandmarker.create_from_options(options)
 
     def analyze_arm_weakness(self, input_video_path: str, output_video_path: str):
-        cap = cv2.VideoCapture(input_video_path)
+        # PERBAIKAN: Inisialisasi Landmarker per-request agar state timestamps direset
+        # dan tidak bocor/tabrakan (race condition) dengan request user lain.
+        landmarker = self._initialize_model()
         
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        # PERBAIKAN 1: Cegah FPS yang tidak masuk akal (misal > 120) akibat bug OpenCV membaca metadata video HP
-        if fps <= 0 or math.isnan(fps) or fps > 120: 
-            fps = 30
-            
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
-        # Konfigurasi Video Writer (Gunakan mp4v atau avc1)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_video_path, fourcc, int(fps), (w, h))
-
-        # --- STATE MANAGEMENT ---
-        test_active = False
-        test_start_sec = 0.0
-        baseline_ly, baseline_ry = 0, 0
-        violation_start_sec = None
-        current_violation = None
-        
-        # Metrics tracking
+        current_sec = 0.0 # Default fallback
         max_drift = 0
         max_asymmetry = 0
         drift_threshold_ref = 1
         final_result_label = "Normal / Kekuatan Penuh"
-        
-        frame_idx = 0
-        last_timestamp_ms = -1 # PERBAIKAN 2: Variabel pelacak timestamp sebelumnya
 
-        while cap.isOpened():
-            success, frame = cap.read()
-            if not success:
-                break
-                
-            # --- PERBAIKAN 3: LOGIKA TIMESTAMP MONOTONIK ---
-            # Hitung timestamp berdasarkan frame
-            calculated_timestamp_ms = int((frame_idx / fps) * 1000)
+        try:
+            cap = cv2.VideoCapture(input_video_path)
             
-            # Pastikan timestamp SELALU LEBIH BESAR dari frame sebelumnya
-            if calculated_timestamp_ms <= last_timestamp_ms:
-                timestamp_ms = last_timestamp_ms + 1
-            else:
-                timestamp_ms = calculated_timestamp_ms
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps <= 0 or math.isnan(fps) or fps > 120: 
+                fps = 30
                 
-            # Update last_timestamp_ms untuk pengecekan frame berikutnya
-            last_timestamp_ms = timestamp_ms
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             
-            current_sec = timestamp_ms / 1000.0
-            frame_idx += 1
-            # -----------------------------------------------
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_video_path, fourcc, int(fps), (w, h))
 
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
-            # Masukkan timestamp yang sudah dijamin naik
-            result = self.landmarker.detect_for_video(mp_image, timestamp_ms)
+            # --- STATE MANAGEMENT ---
+            test_active = False
+            test_start_sec = 0.0
+            baseline_ly, baseline_ry = 0, 0
+            violation_start_sec = None
+            current_violation = None
+            
+            frame_idx = 0
+            last_timestamp_ms = -1 
 
-            if result.pose_landmarks:
-                landmarks = result.pose_landmarks[0]
-                
-                # Fungsi helper koordinat
-                def get_pt(idx): return int(landmarks[idx].x * w), int(landmarks[idx].y * h)
-
-                ls, rs = landmarks[11], landmarks[12] # Bahu
-                lw, rw = landmarks[15], landmarks[16] # Pergelangan Tangan
-                
-                pt_ls, pt_rs = get_pt(11), get_pt(12)
-                pt_lw, pt_rw = get_pt(15), get_pt(16)
-
-                shoulder_width = math.sqrt((ls.x - rs.x)**2 + (ls.y - rs.y)**2)
-                
-                if shoulder_width > 0:
-                    DRIFT_THRESHOLD = shoulder_width * 0.35 
-                    ASYM_THRESHOLD = shoulder_width * 0.20
-                    drift_threshold_ref = DRIFT_THRESHOLD
+            while cap.isOpened():
+                success, frame = cap.read()
+                if not success:
+                    break
                     
-                    arms_raised = (lw.y < ls.y + 0.25) and (rw.y < rs.y + 0.25)
+                # Hitung timestamp berdasarkan frame
+                calculated_timestamp_ms = int((frame_idx / fps) * 1000)
+                
+                # Pastikan timestamp SELALU LEBIH BESAR dari frame sebelumnya secara lokal
+                if calculated_timestamp_ms <= last_timestamp_ms:
+                    timestamp_ms = last_timestamp_ms + 1
+                else:
+                    timestamp_ms = calculated_timestamp_ms
+                    
+                last_timestamp_ms = timestamp_ms
+                current_sec = timestamp_ms / 1000.0
+                frame_idx += 1
 
-                    # VISUALISASI DASAR
-                    cv2.line(frame, pt_ls, pt_lw, (255, 255, 0), 2)
-                    cv2.line(frame, pt_rs, pt_rw, (255, 255, 0), 2)
-                    cv2.circle(frame, pt_lw, 8, (0, 0, 255), -1)
-                    cv2.circle(frame, pt_rw, 8, (0, 0, 255), -1)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+                
+                # Gunakan model instance yang BARU khusus request ini
+                result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
-                    # LOGIKA TES
-                    if not test_active and arms_raised:
-                        # Mulai tes saat lengan pertama kali terangkat
-                        test_active = True
-                        test_start_sec = current_sec
-                        baseline_ly = lw.y
-                        baseline_ry = rw.y
+                if result.pose_landmarks:
+                    landmarks = result.pose_landmarks[0]
+                    
+                    def get_pt(idx): return int(landmarks[idx].x * w), int(landmarks[idx].y * h)
 
-                    elif test_active:
-                        elapsed = current_sec - test_start_sec
+                    ls, rs = landmarks[11], landmarks[12] 
+                    lw, rw = landmarks[15], landmarks[16] 
+                    
+                    pt_ls, pt_rs = get_pt(11), get_pt(12)
+                    pt_lw, pt_rw = get_pt(15), get_pt(16)
+
+                    shoulder_width = math.sqrt((ls.x - rs.x)**2 + (ls.y - rs.y)**2)
+                    
+                    if shoulder_width > 0:
+                        DRIFT_THRESHOLD = shoulder_width * 0.35 
+                        ASYM_THRESHOLD = shoulder_width * 0.20
+                        drift_threshold_ref = DRIFT_THRESHOLD
                         
-                        # Jika sudah lewat 10 detik, set selesai
-                        if elapsed <= 10.0:
-                            # Gambar Baseline
-                            cv2.line(frame, (0, int(baseline_ly * h)), (w, int(baseline_ly * h)), (0, 255, 0), 1)
-                            cv2.line(frame, (0, int(baseline_ry * h)), (w, int(baseline_ry * h)), (0, 255, 0), 1)
+                        arms_raised = (lw.y < ls.y + 0.25) and (rw.y < rs.y + 0.25)
 
-                            drift_left = lw.y - baseline_ly
-                            drift_right = rw.y - baseline_ry
-                            asymmetry = abs(drift_left - drift_right)
+                        cv2.line(frame, pt_ls, pt_lw, (255, 255, 0), 2)
+                        cv2.line(frame, pt_rs, pt_rw, (255, 255, 0), 2)
+                        cv2.circle(frame, pt_lw, 8, (0, 0, 255), -1)
+                        cv2.circle(frame, pt_rw, 8, (0, 0, 255), -1)
 
-                            # Track maksimum deviasi untuk skor keparahan
-                            max_drift = max(max_drift, max(drift_left, drift_right))
-                            max_asymmetry = max(max_asymmetry, asymmetry)
+                        if not test_active and arms_raised:
+                            test_active = True
+                            test_start_sec = current_sec
+                            baseline_ly = lw.y
+                            baseline_ry = rw.y
 
-                            current_violation = None
-                            if drift_left > DRIFT_THRESHOLD and drift_right > DRIFT_THRESHOLD:
-                                current_violation = "Kelemahan Kedua Lengan"
-                            elif drift_left > DRIFT_THRESHOLD:
-                                current_violation = "Kelemahan Lengan Kiri"
-                            elif drift_right > DRIFT_THRESHOLD:
-                                current_violation = "Kelemahan Lengan Kanan"
-                            elif asymmetry > ASYM_THRESHOLD:
-                                current_violation = "Asimetri Lengan Terdeteksi"
+                        elif test_active:
+                            elapsed = current_sec - test_start_sec
+                            
+                            if elapsed <= 10.0:
+                                cv2.line(frame, (0, int(baseline_ly * h)), (w, int(baseline_ly * h)), (0, 255, 0), 1)
+                                cv2.line(frame, (0, int(baseline_ry * h)), (w, int(baseline_ry * h)), (0, 255, 0), 1)
 
-                            if current_violation:
-                                if violation_start_sec is None:
-                                    violation_start_sec = current_sec
-                                
-                                violation_duration = current_sec - violation_start_sec
-                                
-                                cv2.putText(frame, f"WARNING: {current_violation}!", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                                
-                                # Jika melebihi 2 detik, catat status akhirnya
-                                if violation_duration > 2.0:
-                                    final_result_label = current_violation
+                                drift_left = lw.y - baseline_ly
+                                drift_right = rw.y - baseline_ry
+                                asymmetry = abs(drift_left - drift_right)
+
+                                max_drift = max(max_drift, max(drift_left, drift_right))
+                                max_asymmetry = max(max_asymmetry, asymmetry)
+
+                                current_violation = None
+                                if drift_left > DRIFT_THRESHOLD and drift_right > DRIFT_THRESHOLD:
+                                    current_violation = "Kelemahan Kedua Lengan"
+                                elif drift_left > DRIFT_THRESHOLD:
+                                    current_violation = "Kelemahan Lengan Kiri"
+                                elif drift_right > DRIFT_THRESHOLD:
+                                    current_violation = "Kelemahan Lengan Kanan"
+                                elif asymmetry > ASYM_THRESHOLD:
+                                    current_violation = "Asimetri Lengan Terdeteksi"
+
+                                if current_violation:
+                                    if violation_start_sec is None:
+                                        violation_start_sec = current_sec
+                                    
+                                    violation_duration = current_sec - violation_start_sec
+                                    
+                                    cv2.putText(frame, f"WARNING: {current_violation}!", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                                    
+                                    if violation_duration > 2.0:
+                                        final_result_label = current_violation
+                                else:
+                                    violation_start_sec = None
+
+                                remaining = max(0, 10.0 - elapsed)
+                                cv2.putText(frame, f"Time: {remaining:.1f}s", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
+                            
                             else:
-                                violation_start_sec = None
+                                color = (0, 255, 0) if "Normal" in final_result_label else (0, 0, 255)
+                                cv2.putText(frame, "HASIL ANALISIS:", (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                                cv2.putText(frame, final_result_label, (50, 130), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
 
-                            # Tampilkan Waktu
-                            remaining = max(0, 10.0 - elapsed)
-                            cv2.putText(frame, f"Time: {remaining:.1f}s", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
-                        
-                        else:
-                            # Tampilkan Hasil jika tes sudah lebih dari 10 detik
-                            color = (0, 255, 0) if "Normal" in final_result_label else (0, 0, 255)
-                            cv2.putText(frame, "HASIL ANALISIS:", (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                            cv2.putText(frame, final_result_label, (50, 130), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
+                else:
+                    cv2.putText(frame, "No Body Detected", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-            else:
-                cv2.putText(frame, "No Body Detected", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                out.write(frame)
 
-            out.write(frame)
-
-        cap.release()
-        out.release()
+            cap.release()
+            out.release()
+        
+        finally:
+            # PERBAIKAN: Selalu pastikan instance dihapus dari memory walau terjadi error / crash
+            landmarker.close()
 
         # KALKULASI SKOR SEVERITY (0-100)
         severity_ratio = (max_drift / drift_threshold_ref) if drift_threshold_ref > 0 else 0
         severity_score = int(min(100, max(0, severity_ratio * 50)))
 
-        # Override severity jika tidak ada kegagalan tapi ada asimetri
         if final_result_label == "Normal / Kekuatan Penuh" and max_drift > 0:
             if severity_score > 25:
                 final_result_label = "Kelemahan Sangat Ringan"
@@ -200,7 +197,7 @@ class ArmAnalyzerService:
         metrics = {
             "max_arm_drift_ratio": round(severity_ratio, 3),
             "max_asymmetry_ratio": round(max_asymmetry / drift_threshold_ref, 3) if drift_threshold_ref > 0 else 0,
-            "test_duration_analyzed_sec": round(current_sec, 2) if 'current_sec' in locals() else 0.0
+            "test_duration_analyzed_sec": round(current_sec, 2)
         }
 
         return {
