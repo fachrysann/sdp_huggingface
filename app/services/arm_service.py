@@ -210,12 +210,6 @@ class ArmAnalyzerService:
                 else:
                     draw_ui_box(frame, "NO SUBJECT DETECTED", 30, 70, bg_color=(0, 0, 180), font_scale=0.8)
 
-                # --- ENTERPRISE HEADER BAR ---
-                overlay_header = frame.copy()
-                cv2.rectangle(overlay_header, (0, 0), (w, 45), (20, 20, 20), -1)
-                cv2.addWeighted(overlay_header, 0.85, frame, 0.15, 0, frame)
-                cv2.putText(frame, "CLINICAL KINEMATICS: ARM MOTOR DRIFT ANALYSIS", (20, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (240, 240, 240), 1, cv2.LINE_AA)
-
                 out.write(frame)
 
             cap.release()

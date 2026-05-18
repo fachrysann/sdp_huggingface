@@ -209,18 +209,21 @@ class FaceAnalyzerService:
  
     def _calculate_and_draw(self, landmarks, image, rotation_angle_deg: float = 0.0):
         h, w, _ = image.shape
- 
+
+        # Scale factor relative to 720x1280 reference
+        scale = min(w / 720, h / 1280)
+
         def get_pt(i):
             return int(landmarks[i].x * w), int(landmarks[i].y * h)
- 
+
         # 1. MATHEMATICAL LOGIC
         # Points: B=6, T=1, R=61, L=291
         B, T, R, L = get_pt(6), get_pt(1), get_pt(61), get_pt(291)
- 
+
         # Face Scale
         p33, p263 = landmarks[33], landmarks[263]
         face_scale = math.sqrt((p33.x - p263.x)**2 + (p33.y - p263.y)**2)
- 
+
         def calc_angle(p_target, p_vertex, p_base):
             v1 = np.array([p_target[0] - p_vertex[0], p_target[1] - p_vertex[1]])
             v2 = np.array([p_base[0] - p_vertex[0], p_base[1] - p_vertex[1]])
@@ -229,78 +232,109 @@ class FaceAnalyzerService:
             if mag1 == 0 or mag2 == 0:
                 return 0
             return math.degrees(math.acos(np.clip(dot / (mag1 * mag2), -1.0, 1.0)))
- 
+
         # Perhitungan Asimetri
         angle_right = calc_angle(B, R, T)
         angle_left  = calc_angle(B, L, T)
         mouth_diff  = abs(angle_right - angle_left)
- 
+
         left_eye_open  = landmarks[159].y - landmarks[145].y
         right_eye_open = landmarks[386].y - landmarks[374].y
         eye_asym       = abs(left_eye_open - right_eye_open) / face_scale * 10
 
         base_dead_zone   = 3.0
-        rotation_penalty = abs(rotation_angle_deg) * 0.15  # tiap 1° rotasi → +0.15 toleransi
+        rotation_penalty = abs(rotation_angle_deg) * 0.15
         mouth_dead_zone  = base_dead_zone + rotation_penalty
- 
+
         # Scoring
         m_pct = (mouth_diff / 10.0) * 100 if mouth_diff > mouth_dead_zone else 0
         e_pct = (eye_asym / 0.5)    * 100 if eye_asym > 0.08  else 0
         final_pct = round(min(100, max(m_pct, e_pct)))
- 
+
         # Severity Logic
         if final_pct > 45:
-            severity, desc, color = "Asimetri Parah",     "Deviasi signifikan",            (0, 0, 255)
+            severity, desc, color = "Asimetri Parah",  "Deviasi signifikan",          (0, 0, 255)
         elif final_pct > 30:
-            severity, desc, color = "Asimetri Ringan",    "Deviasi ringan",                 (0, 165, 255)
+            severity, desc, color = "Asimetri Ringan", "Deviasi ringan",               (0, 165, 255)
         else:
-            severity, desc, color = "Normal", "Tidak ada gejala signifikan.",   (0, 255, 0)
- 
+            severity, desc, color = "Normal",          "Tidak ada gejala signifikan.", (0, 255, 0)
+
         # --- VISUALIZATION ---
- 
+
+        # Scaled sizes
+        line_thickness  = max(1, int(6 * scale))
+        circle_r_small  = max(2, int(8  * scale))   # eye landmark dots
+        circle_r_large  = max(4, int(11  * scale))   # B/T/R/L markers
+        circle_border   = max(1, int(7  * scale))
+
+        font_score    = max(0.5, 1.6  * scale)
+        font_severity = max(0.4, 1.2  * scale)
+        font_metric   = max(0.3, 1.0  * scale)
+        font_desc     = max(0.3, 0.8  * scale)
+        font_label    = max(0.3, 1.2  * scale)
+
+        thick_score    = max(1, int(3 * scale))
+        thick_severity = max(1, int(2 * scale))
+        thick_metric   = max(1, int(2 * scale))
+        thick_label    = max(1, int(2 * scale))
+
+        # Dashboard dimensions
+        dash_w = int(560 * scale)
+        dash_h = int(280 * scale)
+
+        # Text Y positions (proportional)
+        y1 = int(50  * scale)
+        y2 = int(105 * scale)
+        y3 = int(155 * scale)
+        y4 = int(195 * scale)
+        y5 = int(250 * scale)
+
+        # Label offset from landmark point
+        lbl_ox = int(14 * scale)
+        lbl_oy = int(14 * scale)
+
         # A. Garis Mulut (Merah)
-        cv2.polylines(image, [np.array([B, R, T])], False, (0, 0, 255), 2)
-        cv2.polylines(image, [np.array([B, L, T])], False, (0, 0, 255), 2)
- 
+        cv2.polylines(image, [np.array([B, R, T])], False, (0, 0, 255), line_thickness)
+        cv2.polylines(image, [np.array([B, L, T])], False, (0, 0, 255), line_thickness)
+
         # B. Gambar Mata (Cyan & Magenta)
         def draw_eye(indices):
             pts = np.array([get_pt(i) for i in indices], np.int32)
-            cv2.polylines(image, [pts], False, (255, 255, 0), 2)    # Cyan
+            cv2.polylines(image, [pts], False, (255, 255, 0), line_thickness)   # Cyan
             for p in pts:
-                cv2.circle(image, p, 3, (255, 0, 255), -1)           # Magenta
- 
+                cv2.circle(image, p, circle_r_small, (255, 0, 255), -1)         # Magenta
+
         draw_eye([130, 161, 160, 159, 158, 157, 133])  # Kiri
         draw_eye([362, 384, 385, 386, 387, 388, 263])  # Kanan
- 
+
         # C. Label B, T, R, L
         for pt, label in [(B, "B"), (T, "T"), (R, "R"), (L, "L")]:
-            cv2.circle(image, pt, 6, (0, 255, 255), -1)
-            cv2.circle(image, pt, 6, (0, 0, 0), 2)
-            cv2.putText(image, label, (pt[0] + 10, pt[1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
- 
+            cv2.circle(image, pt, circle_r_large, (0, 255, 255), -1)
+            cv2.circle(image, pt, circle_r_large, (0, 0, 0), circle_border)
+            cv2.putText(image, label, (pt[0] + lbl_ox, pt[1] - lbl_oy),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_label, (255, 255, 255), thick_label)
+
         # D. Dashboard
         overlay = image.copy()
-        cv2.rectangle(overlay, (0, 0), (400, 160), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (0, 0), (dash_w, dash_h), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
- 
+
         # E. Teks Dashboard
-        cv2.putText(image, f"Score: {final_pct}%",              (15,  30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        cv2.putText(image, severity,                             (15,  60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-        cv2.putText(image, f"Mouth Diff: {mouth_diff:.1f} deg", (15,  90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.putText(image, f"Eye Asym : {eye_asym:.3f}",        (15, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.putText(image, desc,                                 (15, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
- 
+        cv2.putText(image, f"Score: {final_pct}%",              (int(20*scale), y1), cv2.FONT_HERSHEY_SIMPLEX, font_score,    color, thick_score)
+        cv2.putText(image, severity,                             (int(20*scale), y2), cv2.FONT_HERSHEY_SIMPLEX, font_severity, color, thick_severity)
+        cv2.putText(image, f"Mouth Diff: {mouth_diff:.1f} deg", (int(20*scale), y3), cv2.FONT_HERSHEY_SIMPLEX, font_metric,   (200, 200, 200), thick_metric)
+        cv2.putText(image, f"Eye Asym : {eye_asym:.3f}",        (int(20*scale), y4), cv2.FONT_HERSHEY_SIMPLEX, font_metric,   (200, 200, 200), thick_metric)
+        cv2.putText(image, desc,                                 (int(20*scale), y5), cv2.FONT_HERSHEY_SIMPLEX, font_desc,    (255, 255, 255), thick_metric)
+
         return {
             "severity_score": final_pct,
             "status_label"  : severity,
             "metrics"       : {
-                "raw_severity_pct"     : final_pct,
-                "mouth_diff_deg"       : round(mouth_diff, 2),
-                "eye_asymmetry_ratio"  : round(eye_asym, 4),
+                "raw_severity_pct"    : final_pct,
+                "mouth_diff_deg"      : round(mouth_diff, 2),
+                "eye_asymmetry_ratio" : round(eye_asym, 4),
             }
         }
-    
     # ==========================================
     # ENDPOINT 2: EYE SYMMETRY (IMPROVED)
     # ==========================================
@@ -415,15 +449,15 @@ class FaceAnalyzerService:
 
         for idx in [468, 473]:
             cx, cy = lm_px(idx)
-            cv2.circle(image, (cx, cy), 5, (0, 255, 255), -1)
-            cv2.circle(image, (cx, cy), 5, (0, 0, 0), 1)
+            cv2.circle(image, (cx, cy), 7, (0, 255, 255), -1)
+            cv2.circle(image, (cx, cy), 7, (0, 0, 0), 1)
 
         for idx in [33, 133, 263, 362]:
             cx, cy = lm_px(idx)
-            cv2.circle(image, (cx, cy), 4, (255, 200, 0), -1)
+            cv2.circle(image, (cx, cy), 7, (255, 200, 0), -1)
 
-        cv2.arrowedLine(image, lm_px(33),  lm_px(133), (180, 180, 0), 1, tipLength=0.15)
-        cv2.arrowedLine(image, lm_px(263), lm_px(362), (180, 180, 0), 1, tipLength=0.15)
+        cv2.arrowedLine(image, lm_px(33),  lm_px(133), (180, 180, 0), 2, tipLength=0.15)
+        cv2.arrowedLine(image, lm_px(263), lm_px(362), (180, 180, 0), 2, tipLength=0.15)
 
         # ==================== 2. MENCARI BOUNDING BOX AREA MATA ====================
         eye_points =[133, 362, 33, 263, 159, 386, 145, 374, 70, 300] 

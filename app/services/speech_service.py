@@ -10,7 +10,7 @@ class AudioAnalyzerService:
         # Setup Path
         self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.model_dir = os.path.join(self.base_dir, 'model')
-        
+
         # 1. Pastikan nama file mengarah ke model binary kamu
         self.model_path = os.path.join(self.model_dir, 'model_scripted_resnet18_cpu-binary.pt')
 
@@ -18,7 +18,7 @@ class AudioAnalyzerService:
         # HARUS BERURUTAN sesuai folder alfabet saat training. 
         # Misal foldernya "Control" dan "Dysarthria"
         self.CLASSES = ["Dysarthria", "Non-Dysarthria"]
-        
+
         self.SAMPLE_RATE = 16000
         self.MAX_TIME_STEPS = 192
 
