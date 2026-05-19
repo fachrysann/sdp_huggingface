@@ -51,3 +51,4 @@ supabase
 pydub==0.25.1
 tensorflow
 mtcnn
+aiofiles

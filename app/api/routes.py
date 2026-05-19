@@ -9,6 +9,7 @@ import os
 import io
 import asyncio
 from pydub import AudioSegment
+import aiofiles 
 
 from app.config import (
     get_api_key, MAX_FILE_SIZE, ALLOWED_MIME_TYPES, ALLOWED_AUDIO_MIME_TYPES, ALLOWED_VIDEO_MIME_TYPES,
@@ -399,33 +400,42 @@ async def analyze_arm_weakness(
     if file.content_type not in ALLOWED_VIDEO_MIME_TYPES and not file.filename.lower().endswith(('.mp4', '.avi', '.mov')):
         raise HTTPException(status_code=415, detail="Unsupported media type. Only MP4/AVI/MOV are allowed.")
 
-    contents = await file.read()
-    if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="Payload too large. File exceeds maximum allowed size.")
-
     # 2. Buat Temporary File untuk Input dan Output (cv2 membutuhkan path file asli)
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_in:
-            temp_in.write(contents)
-            input_path = temp_in.name
+        # 2. Siapkan file temporary
+        temp_in = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+        input_path = temp_in.name
+        temp_in.close() # Tutup dulu karena kita akan tulis ulang pakai aiofiles
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_out:
-            output_path = temp_out.name
+        temp_out = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+        output_path = temp_out.name
+        temp_out.close()
 
-        # 3. Proses Analisis Video
+        # 3. Proses Streaming Write (BACA & TULIS PER CHUNK)
+        # Akan membaca maksimal 1MB per putaran agar aman di memori
+        total_size = 0
+        async with aiofiles.open(input_path, 'wb') as out_file:
+            while content := await file.read(1024 * 1024):  # 1MB per chunk
+                total_size += len(content)
+                if total_size > MAX_FILE_SIZE: # Misal MAX_FILE_SIZE kamu set 50MB
+                    os.remove(input_path) # Hapus file yg terlanjur ditulis
+                    raise HTTPException(status_code=413, detail="Payload too large. File exceeds maximum allowed size.")
+                await out_file.write(content)
+
+        # 4. Proses Analisis Video (Di thread terpisah)
         results = await asyncio.to_thread(analyzer.analyze_arm_weakness, input_path, output_path)
 
-        # 4. Upload Hasil Video ke Supabase
+        # 5. Upload Hasil Video ke Supabase
         video_url = await upload_video_to_supabase(output_path, folder_name="arm_weakness")
 
-        # 5. Bersihkan Temp File
-        os.remove(input_path)
-        os.remove(output_path)
+        # 6. Bersihkan Temp File
+        if os.path.exists(input_path): os.remove(input_path)
+        if os.path.exists(output_path): os.remove(output_path)
 
-        # 6. Logging ke MLOps
+        # 7. Logging ke MLOps
         await log_prediction_to_supabase(
             endpoint_name="arm_weakness",
-            input_data={"filename": file.filename},
+            input_data={"filename": file.filename, "size_bytes": total_size},
             prediction_result=results,
             media_url=video_url
         )
@@ -436,6 +446,8 @@ async def analyze_arm_weakness(
             "video_url": video_url 
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Server Error (Arm Weakness): {str(e)}")
         # Pastikan file temporary dihapus walaupun terjadi error
