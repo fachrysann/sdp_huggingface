@@ -89,7 +89,7 @@ async def process_uploaded_audio(file: UploadFile):
 # ==================================================
 # UPLOAD TO SUPABASE
 # ==================================================
-def upload_image_to_supabase(img_array, folder_name: str, max_width=1080, jpeg_quality=95):
+async def upload_image_to_supabase(img_array, folder_name: str, max_width=1080, jpeg_quality=95):
     """
     Me-resize gambar, kompres ke JPEG, lalu upload ke Supabase Storage.
     Mengembalikan Public URL.
@@ -112,7 +112,7 @@ def upload_image_to_supabase(img_array, folder_name: str, max_width=1080, jpeg_q
     
     try:
         # 4. Upload to Supabase Bucket
-        supabase.storage.from_(SUPABASE_BUCKET_NAME).upload(
+        await supabase.storage.from_(SUPABASE_BUCKET_NAME).upload(
             path=filename,
             file=image_bytes,
             file_options={"content-type": "image/jpeg"}
@@ -125,14 +125,14 @@ def upload_image_to_supabase(img_array, folder_name: str, max_width=1080, jpeg_q
         print(f"Supabase Upload Error: {str(e)}")
         raise HTTPException(status_code=500, detail="Gagal mengunggah gambar ke Storage.")
     
-def upload_video_to_supabase(video_path: str, folder_name: str):
+async def upload_video_to_supabase(video_path: str, folder_name: str):
     """
     Mengupload video (mp4) ke Supabase Storage dan mengembalikan Public URL.
     """
     filename = f"{folder_name}/{uuid.uuid4().hex}.mp4"
     try:
         with open(video_path, "rb") as f:
-            supabase.storage.from_(SUPABASE_BUCKET_NAME).upload(
+            await supabase.storage.from_(SUPABASE_BUCKET_NAME).upload(
                 path=filename,
                 file=f,
                 file_options={"content-type": "video/mp4"}
