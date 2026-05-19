@@ -7,6 +7,7 @@ from datetime import datetime
 import tempfile # Tambahkan di atas
 import os
 import io
+import asyncio
 from pydub import AudioSegment
 
 from app.config import (
@@ -112,7 +113,8 @@ async def upload_image_to_supabase(img_array, folder_name: str, max_width=1080, 
     
     try:
         # 4. Upload to Supabase Bucket
-        await supabase.storage.from_(SUPABASE_BUCKET_NAME).upload(
+        await asyncio.to_thread(
+            supabase.storage.from_(SUPABASE_BUCKET_NAME).upload,
             path=filename,
             file=image_bytes,
             file_options={"content-type": "image/jpeg"}
@@ -130,13 +132,18 @@ async def upload_video_to_supabase(video_path: str, folder_name: str):
     Mengupload video (mp4) ke Supabase Storage dan mengembalikan Public URL.
     """
     filename = f"{folder_name}/{uuid.uuid4().hex}.mp4"
-    try:
+
+    def perform_upload():
         with open(video_path, "rb") as f:
-            await supabase.storage.from_(SUPABASE_BUCKET_NAME).upload(
+            return supabase.storage.from_(SUPABASE_BUCKET_NAME).upload(
                 path=filename,
                 file=f,
                 file_options={"content-type": "video/mp4"}
             )
+
+    try:
+        await asyncio.to_thread(perform_upload)
+
         public_url = supabase.storage.from_(SUPABASE_BUCKET_NAME).get_public_url(filename)
         return public_url
     except Exception as e:
@@ -161,8 +168,11 @@ async def log_prediction_to_supabase(endpoint_name: str, input_data: dict, predi
             "human_feedback": None # Disiapkan untuk Tahap Feedback Loop
         }
         
+        def perform_logging():
+            return supabase.table("prediction_logs").insert(log_data).execute()
+        
         # Insert ke tabel yang baru kita buat
-        await supabase.table("prediction_logs").insert(log_data).execute()
+        await asyncio.to_thread(perform_logging)
         print(f"MLOps Log saved for {endpoint_name}")
         
     except Exception as e:
