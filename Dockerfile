@@ -30,4 +30,4 @@ EXPOSE 8000
 
 # 8. Perintah untuk menjalankan Gunicorn Server
 # Menggunakan 2 worker uvicorn. Timeout diset 120 detik untuk jaga-jaga proses ML agak lama.
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "2", "--timeout", "120", "app.main:app", "-b", "0.0.0.0:8000"]
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "1", "--timeout", "300", "app.main:app", "-b", "0.0.0.0:8000"]
