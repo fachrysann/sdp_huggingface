@@ -146,7 +146,7 @@ async def upload_video_to_supabase(video_path: str, folder_name: str):
 # ==================================================
 # LOGGING MLOPS TO SUPABASE
 # ==================================================
-def log_prediction_to_supabase(endpoint_name: str, input_data: dict, prediction_result: dict, media_url: str = None):
+async def log_prediction_to_supabase(endpoint_name: str, input_data: dict, prediction_result: dict, media_url: str = None):
     """
     Menyimpan log prediksi ke Supabase untuk keperluan MLOps (Data Tracking)
     """
@@ -162,7 +162,7 @@ def log_prediction_to_supabase(endpoint_name: str, input_data: dict, prediction_
         }
         
         # Insert ke tabel yang baru kita buat
-        supabase.table("prediction_logs").insert(log_data).execute()
+        await supabase.table("prediction_logs").insert(log_data).execute()
         print(f"MLOps Log saved for {endpoint_name}")
         
     except Exception as e:
@@ -202,9 +202,9 @@ async def analyze_facial_palsy(
         # _, buffer = cv2.imencode('.jpg', processed_img)
         # img_base64 = base64.b64encode(buffer).decode('utf-8')
 
-        img_url = upload_image_to_supabase(processed_img, folder_name="facial_palsy")
+        img_url = await upload_image_to_supabase(processed_img, folder_name="facial_palsy")
 
-        log_prediction_to_supabase(
+        await log_prediction_to_supabase(
             endpoint_name="facial_palsy",
             input_data={"filename": file.filename},
             prediction_result=results,
@@ -257,9 +257,9 @@ async def analyze_eye_symmetry(
         # 3. Encode hasil ke Base64
         # _, buffer = cv2.imencode('.jpg', processed_img)
         # img_base64 = base64.b64encode(buffer).decode('utf-8')
-        img_url = upload_image_to_supabase(processed_img, folder_name="eye_symmetry")
+        img_url = await upload_image_to_supabase(processed_img, folder_name="eye_symmetry")
 
-        log_prediction_to_supabase(
+        await log_prediction_to_supabase(
             endpoint_name="eye_symmetry",
             input_data={"filename": file.filename},
             prediction_result=results,
@@ -302,7 +302,7 @@ async def predict_stroke(
         # Panggil service prediksi
         result = predictor.predict_stroke(data.model_dump())
 
-        log_prediction_to_supabase(
+        await log_prediction_to_supabase(
             endpoint_name="riskometer",
             input_data=data.model_dump(), # Simpan data gender, bmi, glukosa, dll
             prediction_result=result,
@@ -347,7 +347,7 @@ async def analyze_speech(
         # Jalankan prediksi
         result = audio_analyzer.predict_audio(contents)
 
-        log_prediction_to_supabase(
+        await log_prediction_to_supabase(
             endpoint_name="speech_dysarthria",
             input_data={"filename": file.filename},
             prediction_result=result,
@@ -405,14 +405,14 @@ async def analyze_arm_weakness(
         results = analyzer.analyze_arm_weakness(input_path, output_path)
 
         # 4. Upload Hasil Video ke Supabase
-        video_url = upload_video_to_supabase(output_path, folder_name="arm_weakness")
+        video_url = await upload_video_to_supabase(output_path, folder_name="arm_weakness")
 
         # 5. Bersihkan Temp File
         os.remove(input_path)
         os.remove(output_path)
 
         # 6. Logging ke MLOps
-        log_prediction_to_supabase(
+        await log_prediction_to_supabase(
             endpoint_name="arm_weakness",
             input_data={"filename": file.filename},
             prediction_result=results,
