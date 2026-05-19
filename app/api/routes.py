@@ -167,7 +167,7 @@ async def log_prediction_to_supabase(endpoint_name: str, input_data: dict, predi
             "metrics": prediction_result.get("metrics"),
             "human_feedback": None # Disiapkan untuk Tahap Feedback Loop
         }
-        
+
         def perform_logging():
             return supabase.table("prediction_logs").insert(log_data).execute()
         
@@ -205,7 +205,8 @@ async def analyze_facial_palsy(
     img = await process_uploaded_image(file)
 
     try:
-        results, processed_img = analyzer.analyze_facial_palsy(img)
+        results, processed_img = await asyncio.to_thread(analyzer.analyze_facial_palsy, img)
+        
         if results is None:
             return {"status": "error", "message": "No face detected"}
 
@@ -259,7 +260,7 @@ async def analyze_eye_symmetry(
 
     try:
         # 2. Proses menggunakan Method baru di Class
-        results, processed_img = analyzer.analyze_eye_symmetry(img)
+        results, processed_img = await asyncio.to_thread(analyzer.analyze_eye_symmetry, img)
 
         if results is None:
             return {"status": "error", "message": "No face detected"}
@@ -355,7 +356,7 @@ async def analyze_speech(
 
     try:
         # Jalankan prediksi
-        result = audio_analyzer.predict_audio(contents)
+        result = await asyncio.to_thread(audio_analyzer.predict_audio, contents)
 
         await log_prediction_to_supabase(
             endpoint_name="speech_dysarthria",
@@ -412,7 +413,7 @@ async def analyze_arm_weakness(
             output_path = temp_out.name
 
         # 3. Proses Analisis Video
-        results = analyzer.analyze_arm_weakness(input_path, output_path)
+        results = await asyncio.to_thread(analyzer.analyze_arm_weakness, input_path, output_path)
 
         # 4. Upload Hasil Video ke Supabase
         video_url = await upload_video_to_supabase(output_path, folder_name="arm_weakness")
