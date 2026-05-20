@@ -98,9 +98,9 @@ class AudioAnalyzerService:
             # is_anomaly = severity_score > 50
 
             if severity_score > 75:
-                status_label = "Indikasi Kuat Disartria"
+                status_label = "Indikasi Kuat Gangguan Bicara"
             elif severity_score > 50:
-                status_label = "Indikasi Ringan Disartria"
+                status_label = "Indikasi Ringan Gangguan Bicara"
             else:
                 status_label = "Normal"
 
