@@ -52,5 +52,5 @@ pydub==0.25.1
 tensorflow
 mtcnn
 aiofiles
-scipy==1.13.0
-librosa==0.10.2
+scipy
+librosa
