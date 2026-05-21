@@ -4,6 +4,9 @@ import torch
 import torch.nn.functional as F
 import torchaudio.transforms as T
 import soundfile as sf
+import librosa
+import scipy.signal as signal
+import numpy as np
 
 class AudioAnalyzerService:
     def __init__(self):
@@ -21,6 +24,10 @@ class AudioAnalyzerService:
 
         self.SAMPLE_RATE = 16000
         self.MAX_TIME_STEPS = 192
+        
+        # Konfigurasi Preprocessing Baru
+        self.CUTOFF_FREQUENCY = 500  # Hz
+        self.TRIM_THRESHOLD_DB = 20  # dB
 
         # Inisialisasi Transforms
         self.mel_spectrogram = T.MelSpectrogram(sample_rate=self.SAMPLE_RATE, n_fft=512, hop_length=160, n_mels=80)
@@ -40,19 +47,36 @@ class AudioAnalyzerService:
         except Exception as e:
             raise RuntimeError(f"Gagal memuat model audio: {e}")
 
+    def _apply_high_pass_filter(self, y: np.ndarray, sr: int, cutoff_freq: int, order: int = 5) -> np.ndarray:
+        """Fungsi internal untuk High-Pass Filter menggunakan scipy"""
+        nyquist = 0.5 * sr
+        normal_cutoff = cutoff_freq / nyquist
+        b, a = signal.butter(order, normal_cutoff, btype='high', analog=False)
+        y_filtered = signal.filtfilt(b, a, y)
+        return y_filtered
+
     def process_audio(self, file_bytes: bytes) -> torch.Tensor:
         """Helper untuk preprocessing audio ke Mel-Spectrogram"""
         audio_data, sr = sf.read(io.BytesIO(file_bytes))
-        waveform = torch.tensor(audio_data, dtype=torch.float32)
+        audio_data = np.array(audio_data, dtype=np.float32)
+
+        if audio_data.ndim > 1:
+            audio_data = np.mean(audio_data, axis=1)
         
-        # Penanganan Channel (Jadikan Mono)
-        if waveform.ndim == 1:
-            waveform = waveform.unsqueeze(0) 
-        else:
-            waveform = waveform.transpose(0, 1) 
-            waveform = torch.mean(waveform, dim=0, keepdim=True) 
+        # 3. Terapkan High-Pass Filter (misal: membuang frekuensi < 500 Hz)
+        audio_data = self._apply_high_pass_filter(audio_data, sr, self.CUTOFF_FREQUENCY)
+        
+        # 4. Terapkan Silence Trim (memotong senyap di awal/akhir)
+        audio_trimmed, _ = librosa.effects.trim(audio_data, top_db=self.TRIM_THRESHOLD_DB)
 
         # Resample jika diperlukan
+        if len(audio_trimmed) > 0:
+            audio_data = audio_trimmed
+
+        # 5. Konversi ke PyTorch Tensor dan tambahkan dimensi channel (1, frames)
+        waveform = torch.tensor(audio_data.copy(), dtype=torch.float32).unsqueeze(0)
+
+        # 6. Resample jika diperlukan
         if sr != self.SAMPLE_RATE:
             resampler = T.Resample(orig_freq=sr, new_freq=self.SAMPLE_RATE)
             waveform = resampler(waveform)
@@ -65,6 +89,8 @@ class AudioAnalyzerService:
         # Ekstraksi Fitur
         mel_spec = self.mel_spectrogram(waveform)
         mel_spec = self.amplitude_to_db(mel_spec)
+
+        # Normalisasi
         mel_spec = (mel_spec - mel_spec.mean()) / (mel_spec.std() + 1e-6)
 
         # Truncating / Padding Waktu

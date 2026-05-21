@@ -393,7 +393,6 @@ class FaceAnalyzerService:
                 "eye_distance_px"   : align_meta["eye_distance_px"],
                 "mtcnn_confidence"  : align_meta["confidence"],
             }
-
         return results, cropped_eye_image
 
     def _calculate_eye_symmetry(self, landmarks, image):
@@ -405,7 +404,6 @@ class FaceAnalyzerService:
 
         # ---- Landmark ----
         l_iris     = landmarks[468]   
-
         r_iris     = landmarks[473]   
 
         # ---- Gaze ratio ----
